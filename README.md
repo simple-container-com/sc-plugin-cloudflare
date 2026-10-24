@@ -36,16 +36,28 @@ What it does NOT do (yet):
 
 ### Download a release binary
 
-Pre-built binaries for each platform are attached to each GitHub Release:
+Pre-built binaries are attached to every GitHub Release. Supported platforms:
+
+| GOOS   | GOARCH | Binary filename                           |
+|--------|--------|-------------------------------------------|
+| linux  | amd64  | `sc-plugin-cloudflare-linux-amd64`        |
+| linux  | arm64  | `sc-plugin-cloudflare-linux-arm64`        |
+| darwin | arm64  | `sc-plugin-cloudflare-darwin-arm64`       |
+
+darwin/amd64 (Intel Macs) and Windows are intentionally unsupported — the operator surface is Linux CI runners + Apple-Silicon dev laptops.
 
 ```sh
-# Linux amd64 example — adjust URL for your platform / version.
+# Linux amd64 example — swap suffix for your platform / version.
 curl -sSLO https://github.com/simple-container-com/sc-plugin-cloudflare/releases/download/v1.0.0/sc-plugin-cloudflare-linux-amd64
 curl -sSLO https://github.com/simple-container-com/sc-plugin-cloudflare/releases/download/v1.0.0/sha256sums.txt
 sha256sum -c sha256sums.txt --ignore-missing  # must say "OK"
 chmod +x sc-plugin-cloudflare-linux-amd64
 mv sc-plugin-cloudflare-linux-amd64 /opt/sc-plugins/sc-plugin-cloudflare
 ```
+
+### Let SC fetch it for you
+
+SC core v2026.10+ resolves plugins directly from a GitHub Release — specify a `source:` block in `plugins:` instead of hand-placing a binary (details under [Configure in `server.yaml`](#configure-in-serveryaml)). The binary is cached under `~/.sc/plugins/<repo>/<version>/` and sha256-verified on every spawn.
 
 ### Build from source
 
@@ -67,8 +79,14 @@ provisioner:
 
 plugins:
   cloudflare:
-    path: /opt/sc-plugins/sc-plugin-cloudflare
-    sha256: <sha256sum of the binary>   # optional but strongly recommended
+    # Preferred: fetch from GitHub Release. SC caches + sha256-verifies.
+    source:
+      type: github-release
+      repository: simple-container-com/sc-plugin-cloudflare
+      version: v2026.10.24-4e4508d       # pin a specific release
+    sha256: <sha256sum of the binary>    # optional — defaults to the release's sha256sums.txt
+    # Dev / air-gapped alternative (mutually exclusive with source):
+    # path: /opt/sc-plugins/sc-plugin-cloudflare
 
 resources:
   registrar:

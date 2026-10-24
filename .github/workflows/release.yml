@@ -7,8 +7,10 @@ name: Release
 #     to main cuts a new sc release).
 #   - manually-pushed "v*" tag → named release for pinning / rollback.
 #
-# Both paths produce the same artifact set: five binaries (linux/darwin
-# amd64+arm64 + windows amd64), a sha256sums.txt, and a GitHub Release.
+# Both paths produce the same artifact set: three binaries (linux/amd64,
+# linux/arm64, darwin/arm64), a sha256sums.txt, and a GitHub Release.
+# darwin/amd64 and windows are intentionally unsupported — the operator
+# surface is Linux CI runners + Apple-Silicon dev laptops.
 #
 # Deliberately minimal: no cosign/SLSA in v1 — the operator-facing install
 # path verifies via sha256sums.txt + GitHub's own commit attestation. Full
