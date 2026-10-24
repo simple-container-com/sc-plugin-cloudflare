@@ -55,11 +55,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: linux,   goarch: amd64 }
-          - { goos: linux,   goarch: arm64 }
-          - { goos: darwin,  goarch: amd64 }
-          - { goos: darwin,  goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +75,6 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           out=sc-plugin-cloudflare-${GOOS}-${GOARCH}
-          [ "${GOOS}" = windows ] && out="${out}.exe"
           go build -trimpath -buildvcs=false \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "../${out}" \
