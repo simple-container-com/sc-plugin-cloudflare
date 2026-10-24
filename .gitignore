@@ -1,0 +1,18 @@
+# Compiled binaries
+/sc-plugin-cloudflare
+/plugin/sc-plugin-cloudflare
+/dist/
+/bin/
+
+# Go test cache
+/plugin/vendor/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
