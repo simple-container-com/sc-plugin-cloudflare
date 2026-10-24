@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) Simple Container
+
+package cloudflare
+
+import (
+	"github.com/simple-container-com/api/pkg/api"
+)
+
+const ProviderType = "cloudflare"
+
+func init() {
+	api.RegisterProviderConfig(api.ConfigRegisterMap{
+		// cloudflare
+		RegistrarType: ReadRegistrarConfig,
+	})
+}
