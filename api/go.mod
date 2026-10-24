@@ -4,7 +4,7 @@ go 1.26.10
 
 require (
 	github.com/onsi/gomega v1.41.0
-	github.com/simple-container-com/api v0.0.0
+	github.com/simple-container-com/api v0.0.0-20261024160028-0bf78164b6f4
 )
 
 require (
@@ -135,5 +135,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/frand v1.5.1 // indirect
 )
-
-replace github.com/simple-container-com/api => /tmp/api-sc-plugin-proto

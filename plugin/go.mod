@@ -9,7 +9,7 @@ require (
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.17.0
 	github.com/pulumi/pulumi/sdk/v3 v3.245.0
 	github.com/samber/lo v1.53.0
-	github.com/simple-container-com/api v0.0.0
+	github.com/simple-container-com/api v0.0.0-20261024160028-0bf78164b6f4
 	github.com/simple-container-com/sc-plugin-cloudflare/api v0.0.0-00010101000000-000000000000
 )
 
@@ -149,9 +149,8 @@ require (
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gotest.tools/v3 v3.5.0 // indirect
 	lukechampine.com/frand v1.5.1 // indirect
 )
-
-replace github.com/simple-container-com/api => /tmp/api-sc-plugin-proto
 
 replace github.com/simple-container-com/sc-plugin-cloudflare/api => ../api
