@@ -20,14 +20,13 @@ import (
 
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
-
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
 	"github.com/simple-container-com/api/pkg/api"
 	"github.com/simple-container-com/api/pkg/api/logger"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
 	scPlugin "github.com/simple-container-com/api/pkg/plugin"
 	scpluginv1 "github.com/simple-container-com/api/pkg/plugin/proto/v1"
+
 	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 	cfInternal "github.com/simple-container-com/sc-plugin-cloudflare/plugin/internal"
 )
@@ -109,7 +108,58 @@ func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecor
 	if err != nil {
 		return nil, err
 	}
-	return &scpluginv1.NewDnsRecordResponse{Urn: refToString(out.Ref)}, nil
+	// Block until Pulumi's async RegisterResource has fired. See waitForRef.
+	return &scpluginv1.NewDnsRecordResponse{Urn: waitForRef(out.Ref)}, nil
+}
+
+// waitForRef blocks until a Pulumi Output in a resource ref resolves. This
+// is what makes the per-RPC pulumi.Context model safe: Pulumi's SDK fires
+// RegisterResource inside an async goroutine, so returning from an RPC
+// handler before the output resolves and then letting `defer pctx.Close()`
+// run would tear down the engine connection mid-registration — the request
+// vanishes silently and no resource lands in state. Waiting on the output
+// ensures the registration RPC has at least been sent (and in practice has
+// completed and resolved the ID) before Close() fires.
+func waitForRef(ref any) string {
+	if ref == nil {
+		return ""
+	}
+	switch r := ref.(type) {
+	case string:
+		return r
+	case sdk.IDOutput:
+		ch := make(chan string, 1)
+		r.ApplyT(func(id sdk.ID) sdk.ID {
+			select {
+			case ch <- string(id):
+			default:
+			}
+			return id
+		})
+		return <-ch
+	case sdk.URNOutput:
+		ch := make(chan string, 1)
+		r.ApplyT(func(u sdk.URN) sdk.URN {
+			select {
+			case ch <- string(u):
+			default:
+			}
+			return u
+		})
+		return <-ch
+	case sdk.StringOutput:
+		ch := make(chan string, 1)
+		r.ApplyT(func(s string) string {
+			select {
+			case ch <- s:
+			default:
+			}
+			return s
+		})
+		return <-ch
+	default:
+		return fmt.Sprintf("%v", r)
+	}
 }
 
 func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.NewOverrideHeaderRuleRequest) (*scpluginv1.NewOverrideHeaderRuleResponse, error) {
@@ -140,7 +190,7 @@ func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.Ne
 	if err != nil {
 		return nil, err
 	}
-	return &scpluginv1.NewOverrideHeaderRuleResponse{Urn: refToString(out.Ref)}, nil
+	return &scpluginv1.NewOverrideHeaderRuleResponse{Urn: waitForRef(out.Ref)}, nil
 }
 
 func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scpluginv1.ProvisionDomainForEndpointRequest) (*scpluginv1.ProvisionDomainForEndpointResponse, error) {
@@ -165,7 +215,7 @@ func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scplugin
 	if err != nil {
 		return nil, err
 	}
-	return &scpluginv1.ProvisionDomainForEndpointResponse{Urn: refToString(out.Ref)}, nil
+	return &scpluginv1.ProvisionDomainForEndpointResponse{Urn: waitForRef(out.Ref)}, nil
 }
 
 func inputsToRegistrarConfig(m map[string]*scpluginv1.InputValue) *cfApi.RegistrarConfig {

@@ -9,15 +9,14 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
-	"github.com/samber/lo"
-
 	cfImpl "github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
+	"github.com/samber/lo"
 	"github.com/simple-container-com/api/pkg/api"
 	"github.com/simple-container-com/api/pkg/api/logger"
-	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
+
+	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 )
 
 type provisioner struct {
