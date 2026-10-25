@@ -37,6 +37,11 @@ type cfPlugin struct {
 	mu        sync.Mutex
 	registrar pApi.Registrar
 	config    *cfApi.RegistrarConfig
+	// progress is the plugin's side of the LogStream RPC. Non-nil at
+	// Serve() time; the gRPC server drains it via LogStream. The lifted
+	// registrar driver pushes to this through the context-threaded
+	// `pApi.ProvisionParams.Log` adaptor set up at ProvisionRegistrar.
+	progress *scPlugin.Publisher
 }
 
 func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpluginv1.SchemaResponse, error) {
@@ -65,6 +70,7 @@ func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.Re
 }
 
 func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.ProvisionRegistrarRequest) (*scpluginv1.ProvisionRegistrarResponse, error) {
+	p.progress.Info("provision-registrar", fmt.Sprintf("initialising cloudflare registrar for zone %q", strVal(req.GetConfig()["zoneName"])))
 	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -78,12 +84,14 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	}
 	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{Log: logger.New()})
 	if err != nil {
+		p.progress.Error("provision-registrar", "init failed: "+err.Error())
 		return nil, errors.Wrap(err, "init cloudflare registrar")
 	}
 	p.mu.Lock()
 	p.registrar = r
 	p.config = cfg
 	p.mu.Unlock()
+	p.progress.Info("provision-registrar", fmt.Sprintf("ready; main domain is %q", r.MainDomain()))
 	return &scpluginv1.ProvisionRegistrarResponse{MainDomain: r.MainDomain()}, nil
 }
 
@@ -99,6 +107,7 @@ func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecor
 	if r == nil {
 		return nil, errors.New("NewDnsRecord called before ProvisionRegistrar")
 	}
+	p.progress.Info("dns-record", fmt.Sprintf("creating %s record %q → %q", req.GetRecordType(), req.GetRecordName(), req.GetValueResolved()))
 	out, err := r.NewRecord(pctx, api.DnsRecord{
 		Name:    req.GetRecordName(),
 		Type:    req.GetRecordType(),
@@ -106,10 +115,13 @@ func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecor
 		Proxied: req.GetProxied(),
 	})
 	if err != nil {
+		p.progress.Error("dns-record", fmt.Sprintf("record %q failed: %v", req.GetRecordName(), err))
 		return nil, err
 	}
 	// Block until Pulumi's async RegisterResource has fired. See waitForRef.
-	return &scpluginv1.NewDnsRecordResponse{Urn: waitForRef(out.Ref)}, nil
+	urn := waitForRef(out.Ref)
+	p.progress.Info("dns-record", fmt.Sprintf("record %q registered (urn=%s)", req.GetRecordName(), urn))
+	return &scpluginv1.NewDnsRecordResponse{Urn: urn}, nil
 }
 
 // waitForRef blocks until a Pulumi Output in a resource ref resolves. This
@@ -186,11 +198,15 @@ func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.Ne
 	if op := req.GetOverridePages(); op != nil {
 		rule.OverridePages = &pApi.OverridePagesRule{IndexPage: op.GetIndexPage(), NotFoundPage: op.GetNotFoundPage()}
 	}
+	p.progress.Info("worker-route", fmt.Sprintf("overriding host %q → %q (rule %q)", rule.FromHost, req.GetToHostResolved(), rule.Name))
 	out, err := r.NewOverrideHeaderRule(pctx, api.Stack{Name: req.GetStackName()}, rule)
 	if err != nil {
+		p.progress.Error("worker-route", fmt.Sprintf("rule %q failed: %v", rule.Name, err))
 		return nil, err
 	}
-	return &scpluginv1.NewOverrideHeaderRuleResponse{Urn: waitForRef(out.Ref)}, nil
+	urn := waitForRef(out.Ref)
+	p.progress.Info("worker-route", fmt.Sprintf("rule %q registered (urn=%s)", rule.Name, urn))
+	return &scpluginv1.NewOverrideHeaderRuleResponse{Urn: urn}, nil
 }
 
 func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scpluginv1.ProvisionDomainForEndpointRequest) (*scpluginv1.ProvisionDomainForEndpointResponse, error) {
@@ -211,11 +227,15 @@ func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scplugin
 		TargetHost: sdk.String(req.GetTargetHostResolved()),
 		WebSocket:  req.GetWebsocket(),
 	}
+	p.progress.Info("endpoint", fmt.Sprintf("provisioning domain %q for endpoint %q (target %q)", endpoint.Domain, endpoint.Name, req.GetTargetHostResolved()))
 	out, err := r.ProvisionDomainForEndpoint(pctx, api.Stack{Name: req.GetStackName()}, endpoint)
 	if err != nil {
+		p.progress.Error("endpoint", fmt.Sprintf("endpoint %q failed: %v", endpoint.Name, err))
 		return nil, err
 	}
-	return &scpluginv1.ProvisionDomainForEndpointResponse{Urn: waitForRef(out.Ref)}, nil
+	urn := waitForRef(out.Ref)
+	p.progress.Info("endpoint", fmt.Sprintf("endpoint %q bound (urn=%s)", endpoint.Name, urn))
+	return &scpluginv1.ProvisionDomainForEndpointResponse{Urn: urn}, nil
 }
 
 func inputsToRegistrarConfig(m map[string]*scpluginv1.InputValue) *cfApi.RegistrarConfig {
@@ -249,12 +269,37 @@ func refToString(ref any) string {
 }
 
 func main() {
+	impl := &cfPlugin{
+		progress: scPlugin.NewPublisher(0),
+	}
 	scPlugin.Serve(scPlugin.ServerConfig{
-		Impl: &cfPlugin{},
+		Impl: impl,
 		Logger: hclog.New(&hclog.LoggerOptions{
 			Name:   "sc-plugin-cloudflare",
 			Level:  hclog.Warn,
 			Output: os.Stderr,
 		}),
 	})
+}
+
+// LogStream drains the plugin's progress Publisher onto the gRPC
+// stream. SC core opens one of these per plugin after Schema() returns.
+// Ends when the stream context cancels (SC core teardown) or Serve()
+// stops accepting (plugin exit).
+func (p *cfPlugin) LogStream(_ *scpluginv1.LogStreamRequest, stream scpluginv1.SCCloudPlugin_LogStreamServer) error {
+	ctx := stream.Context()
+	for {
+		batch, ok := p.progress.Drain()
+		if !ok {
+			return nil
+		}
+		for _, ev := range batch {
+			if err := stream.Send(ev); err != nil {
+				return err
+			}
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+	}
 }
