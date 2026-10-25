@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	github.com/cloudflare/cloudflare-go v0.117.0
 	github.com/hashicorp/go-hclog v1.6.3
+	github.com/onsi/gomega v1.41.0
 	github.com/pkg/errors v0.9.1
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.17.0
 	github.com/pulumi/pulumi/sdk/v3 v3.245.0
