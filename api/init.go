@@ -14,4 +14,18 @@ func init() {
 		// cloudflare
 		RegistrarType: ReadRegistrarConfig,
 	})
+
+	// Fool-protection: when SC core has dropped the in-tree cloudflare
+	// subtree, a server.yaml that uses `type: cloudflare` but lacks a
+	// `plugins.cloudflare` block would silently fail at provision time.
+	// This registration lets SC core's ValidatePluginRequirements emit a
+	// copy-paste-ready error at server.yaml parse time instead.
+	api.RegisterPluginRequirement(api.PluginRequirement{
+		PluginName: "cloudflare",
+		OwnedTypes: []string{RegistrarType},
+		DefaultSource: api.PluginSource{
+			Type:       "github-release",
+			Repository: "simple-container-com/sc-plugin-cloudflare",
+		},
+	})
 }

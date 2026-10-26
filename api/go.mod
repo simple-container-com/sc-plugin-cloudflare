@@ -4,7 +4,7 @@ go 1.26.10
 
 require (
 	github.com/onsi/gomega v1.41.0
-	github.com/simple-container-com/api v0.0.0-20261025074046-0f68d318e227
+	github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611
 )
 
 require (

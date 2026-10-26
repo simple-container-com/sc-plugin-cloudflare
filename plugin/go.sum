@@ -562,6 +562,8 @@ github.com/simple-container-com/api v0.0.0-20261024160028-0bf78164b6f4 h1:bIk2Pg
 github.com/simple-container-com/api v0.0.0-20261024160028-0bf78164b6f4/go.mod h1:GwhRm1oz6coz5HBJg2iozOcKBlOyXTnXBbqKeGX2kAc=
 github.com/simple-container-com/api v0.0.0-20261025074046-0f68d318e227 h1:djxGj7ax6sORNkKcvfVy/VSUio+RndDR6HavRNyFzwQ=
 github.com/simple-container-com/api v0.0.0-20261025074046-0f68d318e227/go.mod h1:GwhRm1oz6coz5HBJg2iozOcKBlOyXTnXBbqKeGX2kAc=
+github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611 h1:ii+YpvPJtVmLh8CPRUZd3LS33eqKkiM3a0hLUz1Aym8=
+github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611/go.mod h1:GwhRm1oz6coz5HBJg2iozOcKBlOyXTnXBbqKeGX2kAc=
 github.com/sirupsen/logrus v1.7.0/go.mod h1:yWOB1SBYBC5VeMP7gHvWumXLIWorT60ONWic61uBYv0=
 github.com/sirupsen/logrus v1.9.4 h1:TsZE7l11zFCLZnZ+teH4Umoq5BhEIfIzfRDZ1Uzql2w=
 github.com/sirupsen/logrus v1.9.4/go.mod h1:ftWc9WdOfJ0a92nsE2jF5u5ZwH8Bv2zdeOC42RjbV2g=
