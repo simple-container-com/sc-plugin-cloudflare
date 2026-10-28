@@ -10,7 +10,7 @@ require (
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.17.0
 	github.com/pulumi/pulumi/sdk/v3 v3.245.0
 	github.com/samber/lo v1.53.0
-	github.com/simple-container-com/api v0.0.0-20261028060534-a13e3e26bf4f
+	github.com/simple-container-com/api v0.0.0-20261028062016-731821e9ee10
 	github.com/simple-container-com/sc-plugin-cloudflare/api v0.0.0-20261026175043-5eddde358585
 )
 
