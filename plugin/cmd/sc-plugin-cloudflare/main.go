@@ -70,7 +70,22 @@ func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.Re
 }
 
 func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.ProvisionRegistrarRequest) (*scpluginv1.ProvisionRegistrarResponse, error) {
-	p.progress.Info("provision-registrar", fmt.Sprintf("initialising cloudflare registrar for zone %q", strVal(req.GetConfig()["zoneName"])))
+	// Say which zone is the CONFIGURED DEFAULT and which the stack asked for,
+	// because this line is emitted before the zone is resolved and in
+	// isolation it reads like the final answer. On the fleet the configured
+	// default is the catch-all `simple-container.com` while every stack
+	// overrides it, so a bare `for zone "simple-container.com"` here looks
+	// exactly like the wrong-zone defect this plugin was released to fix —
+	// it cost a reviewer time on run 40654637631, a run that had in fact
+	// resolved the override correctly. The `ready; zone …` line below is the
+	// authoritative one.
+	initZone := fmt.Sprintf("%q (configured default)", strVal(req.GetConfig()["zoneName"]))
+	if baseZone := req.GetBaseDnsZone(); baseZone != "" {
+		initZone += fmt.Sprintf(", stack prefers %q", baseZone)
+	} else {
+		initZone += ", stack states no preference"
+	}
+	p.progress.Info("provision-registrar", "initialising cloudflare registrar; zone "+initZone)
 	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
