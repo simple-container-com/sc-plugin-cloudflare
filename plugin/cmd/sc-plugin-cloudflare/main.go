@@ -22,7 +22,6 @@ import (
 	"github.com/pkg/errors"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/simple-container-com/api/pkg/api"
-	"github.com/simple-container-com/api/pkg/api/logger"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
 	scPlugin "github.com/simple-container-com/api/pkg/plugin"
 	scpluginv1 "github.com/simple-container-com/api/pkg/plugin/proto/v1"
@@ -39,8 +38,12 @@ type cfPlugin struct {
 	config    *cfApi.RegistrarConfig
 	// progress is the plugin's side of the LogStream RPC. Non-nil at
 	// Serve() time; the gRPC server drains it via LogStream. The lifted
-	// registrar driver pushes to this through the context-threaded
-	// `pApi.ProvisionParams.Log` adaptor set up at ProvisionRegistrar.
+	// registrar driver pushes to this too, through the progressLogger
+	// handed to it as `pApi.ProvisionParams.Log` at ProvisionRegistrar.
+	//
+	// This comment described that adaptor before it existed — the driver
+	// was in fact given `logger.New()` and logged into the subprocess's
+	// stdout, where nothing read it. See progresslog.go.
 	progress *scPlugin.Publisher
 }
 
@@ -112,7 +115,15 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	if baseZone := req.GetBaseDnsZone(); baseZone != "" {
 		pref = &pApi.DnsPreference{BaseZone: baseZone}
 	}
-	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{Log: logger.New(), DnsPreference: pref})
+	// Log through the progress Publisher, NOT logger.New(). The driver's own
+	// Info lines ("configure CNAME DNS record …", the worker-script lines)
+	// went to the plugin subprocess's stdout and never reached the operator —
+	// zero of them appear in forge-notifier run 40654637631. See
+	// progresslog.go for why, and for the phase-coverage trap it closes.
+	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{
+		Log:           newProgressLogger(p.progress, "registrar"),
+		DnsPreference: pref,
+	})
 	if err != nil {
 		p.progress.Error("provision-registrar", "init failed: "+err.Error())
 		return nil, errors.Wrap(err, "init cloudflare registrar")
