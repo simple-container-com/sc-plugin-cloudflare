@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"sync"
 
 	"github.com/pkg/errors"
 	cfImpl "github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
@@ -25,6 +26,13 @@ type provisioner struct {
 	zone      *cfImpl.LookupZoneResult
 	accountId string
 	log       logger.Logger
+
+	// Adopt-on-create for routes retained by an earlier destroy — see adopt.go.
+	// The zone's routes are listed once per deploy, lazily, so a stack with no
+	// endpoints never makes the call.
+	listRoutes routeLister
+	routesOnce sync.Once
+	routes     map[string]liveRoute
 }
 
 func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.ProvisionParams) (pApi.Registrar, error) {
@@ -59,11 +67,12 @@ func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.Pro
 	}
 
 	return &provisioner{
-		provider:  provider,
-		config:    cfg,
-		zone:      cfZone,
-		accountId: cfg.AccountId,
-		log:       params.Log,
+		provider:   provider,
+		config:     cfg,
+		zone:       cfZone,
+		accountId:  cfg.AccountId,
+		log:        params.Log,
+		listRoutes: providerRouteLister(provider),
 	}, nil
 }
 
@@ -169,11 +178,12 @@ func (r *provisioner) NewWorkerScript(ctx *sdk.Context, workerName string, hostN
 		return nil, err
 	}
 	routeName := fmt.Sprintf("%s-route", ruleName)
+	routePattern := fmt.Sprintf("%s/*", hostName)
 	workerRoute, err := cfImpl.NewWorkersRoute(ctx, routeName, &cfImpl.WorkersRouteArgs{
 		ZoneId:  sdk.String(r.zone.ZoneId),
-		Pattern: sdk.String(fmt.Sprintf("%s/*", hostName)),
+		Pattern: sdk.String(routePattern),
 		Script:  workerScript.ScriptName,
-	}, sdk.Provider(r.provider), sdk.RetainOnDelete(true))
+	}, r.routeOptions(ctx, routePattern, workerName, sdk.Provider(r.provider), sdk.RetainOnDelete(true))...)
 	if err != nil {
 		return nil, err
 	}
@@ -355,11 +365,12 @@ async function handleRequest(origRequest) {
 	ctx.Export(fmt.Sprintf("%s-script", ruleName), workerScript.ToWorkerScriptOutput())
 
 	routeName := fmt.Sprintf("%s-route", ruleName)
+	routePattern := fmt.Sprintf("%s/*", rule.FromHost)
 	workerRoute, err := cfImpl.NewWorkersRoute(ctx, routeName, &cfImpl.WorkersRouteArgs{
 		ZoneId:  sdk.String(r.zone.ZoneId),
-		Pattern: sdk.String(fmt.Sprintf("%s/*", rule.FromHost)),
+		Pattern: sdk.String(routePattern),
 		Script:  workerScript.ScriptName,
-	}, sdk.Provider(r.provider), sdk.RetainOnDelete(true))
+	}, r.routeOptions(ctx, routePattern, scriptName, sdk.Provider(r.provider), sdk.RetainOnDelete(true))...)
 	if err != nil {
 		return nil, err
 	}
