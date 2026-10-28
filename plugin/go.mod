@@ -10,8 +10,8 @@ require (
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.17.0
 	github.com/pulumi/pulumi/sdk/v3 v3.245.0
 	github.com/samber/lo v1.53.0
-	github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611
-	github.com/simple-container-com/sc-plugin-cloudflare/api v0.0.0-00010101000000-000000000000
+	github.com/simple-container-com/api v0.0.0-20261028060534-a13e3e26bf4f
+	github.com/simple-container-com/sc-plugin-cloudflare/api v0.0.0-20261026175043-5eddde358585
 )
 
 require (
@@ -86,6 +86,7 @@ require (
 	github.com/djherbis/times v1.5.0 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/ettle/strcase v0.2.0 // indirect

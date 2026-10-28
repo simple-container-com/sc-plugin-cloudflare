@@ -82,7 +82,22 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 		Type:   "cloudflare",
 		Config: api.Config{Config: cfg},
 	}
-	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{Log: logger.New()})
+	// The deploying stack's preferred base zone. cfInternal.Registrar already
+	// honours this (it looks up THAT zone instead of cfg.ZoneName), but the
+	// field did not exist on the plugin bus until api #497, so the override
+	// could never fire and the registrar always resolved its own configured
+	// zone. For the fleet, whose parent server.yaml declares one catch-all
+	// account-wide registrar and publishes every service under a different
+	// zone, that meant writing the record into the WRONG zone — a changed
+	// zone_id is an input diff, so Pulumi replaced the record
+	// create-before-delete and the delete half removed the LIVE one, while
+	// reporting a green deploy. Empty (older core, or a stack with no
+	// baseDnsZone) keeps the previous behaviour.
+	var pref *pApi.DnsPreference
+	if baseZone := req.GetBaseDnsZone(); baseZone != "" {
+		pref = &pApi.DnsPreference{BaseZone: baseZone}
+	}
+	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{Log: logger.New(), DnsPreference: pref})
 	if err != nil {
 		p.progress.Error("provision-registrar", "init failed: "+err.Error())
 		return nil, errors.Wrap(err, "init cloudflare registrar")
@@ -91,7 +106,14 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	p.registrar = r
 	p.config = cfg
 	p.mu.Unlock()
-	p.progress.Info("provision-registrar", fmt.Sprintf("ready; main domain is %q", r.MainDomain()))
+	// Name the zone that was actually resolved, not just the main domain. The
+	// wrong-zone defect above was invisible in the deploy log precisely
+	// because nothing on the progress channel ever said which zone won.
+	effectiveZone := cfg.ZoneName
+	if pref != nil {
+		effectiveZone = pref.BaseZone + " (stack override of " + cfg.ZoneName + ")"
+	}
+	p.progress.Info("provision-registrar", fmt.Sprintf("ready; zone %s, main domain is %q", effectiveZone, r.MainDomain()))
 	return &scpluginv1.ProvisionRegistrarResponse{MainDomain: r.MainDomain()}, nil
 }
 
