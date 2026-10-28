@@ -157,6 +157,8 @@ github.com/docker/go-connections v0.7.0 h1:6SsRfJddP22WMrCkj19x9WKjEDTB+ahsdiGYf
 github.com/docker/go-connections v0.7.0/go.mod h1:no1qkHdjq7kLMGUXYAduOhYPSJxxvgWBh7ogVvptn3Q=
 github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=
 github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
+github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
+github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/elazarl/goproxy v1.7.2 h1:Y2o6urb7Eule09PjlhQRGNsqRfPmYI3KKQLFpCAV3+o=
 github.com/elazarl/goproxy v1.7.2/go.mod h1:82vkLNir0ALaW14Rc399OTTjyNREgmdL2cVoIbS6XaE=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
@@ -564,6 +566,10 @@ github.com/simple-container-com/api v0.0.0-20261025074046-0f68d318e227 h1:djxGj7
 github.com/simple-container-com/api v0.0.0-20261025074046-0f68d318e227/go.mod h1:GwhRm1oz6coz5HBJg2iozOcKBlOyXTnXBbqKeGX2kAc=
 github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611 h1:ii+YpvPJtVmLh8CPRUZd3LS33eqKkiM3a0hLUz1Aym8=
 github.com/simple-container-com/api v0.0.0-20261026174833-b4a4eed70611/go.mod h1:GwhRm1oz6coz5HBJg2iozOcKBlOyXTnXBbqKeGX2kAc=
+github.com/simple-container-com/api v0.0.0-20261028060534-a13e3e26bf4f h1:zNSvu9FDUW5SsKCbaiaV8BNhzKyEEmjW6rsYjKkz3LA=
+github.com/simple-container-com/api v0.0.0-20261028060534-a13e3e26bf4f/go.mod h1:svr5sdo7EJf7nEuU+mFXO5IZsDJGHDSQADaBdKaZSm0=
+github.com/simple-container-com/api v0.0.0-20261028062016-731821e9ee10 h1:Ae3e6NRrxdLgp1o1Ro4ygXA9eFcktsnkZYpSqFrHfvI=
+github.com/simple-container-com/api v0.0.0-20261028062016-731821e9ee10/go.mod h1:svr5sdo7EJf7nEuU+mFXO5IZsDJGHDSQADaBdKaZSm0=
 github.com/sirupsen/logrus v1.7.0/go.mod h1:yWOB1SBYBC5VeMP7gHvWumXLIWorT60ONWic61uBYv0=
 github.com/sirupsen/logrus v1.9.4 h1:TsZE7l11zFCLZnZ+teH4Umoq5BhEIfIzfRDZ1Uzql2w=
 github.com/sirupsen/logrus v1.9.4/go.mod h1:ftWc9WdOfJ0a92nsE2jF5u5ZwH8Bv2zdeOC42RjbV2g=
