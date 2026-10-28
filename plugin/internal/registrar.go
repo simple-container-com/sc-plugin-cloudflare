@@ -52,6 +52,9 @@ func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.Pro
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to init pulumi")
 	}
+	if err := awaitRegistered(ctx, "cloudflare provider", cfg.AccountId, provider); err != nil {
+		return nil, err
+	}
 
 	cfZone, err := cfImpl.LookupZone(ctx, &cfImpl.LookupZoneArgs{
 		Filter: &cfImpl.GetZoneFilter{
@@ -77,7 +80,11 @@ func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.Pro
 }
 
 func (r *provisioner) ProvisionRecords(ctx *sdk.Context, params pApi.ProvisionParams) (*api.ResourceOutput, error) {
-	res := lo.Map(r.config.Records, func(record api.DnsRecord, _ int) sdk.Output {
+	// Register every record first and await them as a batch afterwards — see
+	// await.go on why the two phases must not be interleaved.
+	res := make([]sdk.Output, 0, len(r.config.Records))
+	pending := make([]registered, 0, len(r.config.Records))
+	for _, record := range r.config.Records {
 		var suffix string
 		if lo.CountBy(r.config.Records, func(item api.DnsRecord) bool {
 			return record.Name == item.Name
@@ -92,7 +99,7 @@ func (r *provisioner) ProvisionRecords(ctx *sdk.Context, params pApi.ProvisionPa
 		if record.Value != "" {
 			recordValue = sdk.String(record.Value).ToStringOutput()
 		}
-		res, err := cfImpl.NewRecord(ctx, recordName, &cfImpl.RecordArgs{
+		created, err := cfImpl.NewRecord(ctx, recordName, &cfImpl.RecordArgs{
 			ZoneId:  sdk.String(r.zone.ZoneId),
 			Name:    sdk.String(record.Name),
 			Type:    sdk.String(record.Type),
@@ -101,10 +108,18 @@ func (r *provisioner) ProvisionRecords(ctx *sdk.Context, params pApi.ProvisionPa
 			Ttl:     sdk.Float64(1),
 		}, sdk.Provider(r.provider))
 		if err != nil {
+			// This used to log and fall through to `res.ID()` on a nil *Record,
+			// which panics — so the one path that noticed a failed record was
+			// also the one path that could not report it.
 			params.Log.Error(ctx.Context(), "failed to create record %q: %v", record.Name, err)
+			return nil, errors.Wrapf(err, "failed to create record %q", record.Name)
 		}
-		return res.ID()
-	})
+		pending = append(pending, registered{kind: "dns record", name: recordName, res: created})
+		res = append(res, created.ID())
+	}
+	if err := awaitAll(ctx, pending...); err != nil {
+		return nil, err
+	}
 	return &api.ResourceOutput{
 		Ref: sdk.ToArrayOutput(res),
 	}, nil
@@ -131,6 +146,9 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 	}, sdk.Provider(r.provider))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create record %q", dnsRecord.Name)
+	}
+	if err := awaitRegistered(ctx, "dns record", dnsRecord.Name, ref); err != nil {
+		return nil, err
 	}
 
 	return &api.ResourceOutput{
@@ -190,6 +208,14 @@ func (r *provisioner) NewWorkerScript(ctx *sdk.Context, workerName string, hostN
 	ctx.Export(fmt.Sprintf("%s-route", ruleName), workerRoute.ToWorkersRouteOutput())
 
 	ctx.Export(fmt.Sprintf("%s-script", ruleName), workerScript.ToWorkerScriptOutput())
+
+	if err := awaitAll(
+		ctx,
+		registered{kind: "worker script", name: workerName, res: workerScript},
+		registered{kind: "worker route", name: routePattern, res: workerRoute},
+	); err != nil {
+		return nil, err
+	}
 	return &api.ResourceOutput{
 		Ref: workerRoute.ID(),
 	}, nil
@@ -197,7 +223,15 @@ func (r *provisioner) NewWorkerScript(ctx *sdk.Context, workerName string, hostN
 
 func (r *provisioner) NewOverrideHeaderRule(ctx *sdk.Context, stack api.Stack, rule pApi.OverrideHeaderRule) (*api.ResourceOutput, error) {
 	ruleName := fmt.Sprintf("%s%s-host-override", stack.Name, rule.Name)
-	r.log.Info(ctx.Context(), "configure cloudflare worker script overriding header from %q to %q...", rule.FromHost, rule.ToHost)
+	// rule.ToHost is an sdk.StringInput — usually an unresolved Output, since the
+	// endpoint it names is typically created in the same deploy. Formatting it here
+	// printed literal junk (`to {%!q(*internal.OutputState=&{0xc000...})}`) and was
+	// a genuine data race: fmt reflects over the OutputState's value field while the
+	// SDK's registration goroutine is resolving it (`go test -race` on
+	// TestURNContract_OverrideHeaderRuleName reports it against this line). Log the
+	// host that is actually a string; the target is visible in the route's own
+	// progress output.
+	r.log.Info(ctx.Context(), "configure cloudflare worker script overriding header for host %q...", rule.FromHost)
 	scriptName := fmt.Sprintf("%s-script", ruleName)
 
 	headerCode := ""
@@ -375,6 +409,14 @@ async function handleRequest(origRequest) {
 		return nil, err
 	}
 	ctx.Export(fmt.Sprintf("%s-route", ruleName), workerRoute.ToWorkersRouteOutput())
+
+	if err := awaitAll(
+		ctx,
+		registered{kind: "worker script", name: scriptName, res: workerScript},
+		registered{kind: "worker route", name: routePattern, res: workerRoute},
+	); err != nil {
+		return nil, err
+	}
 
 	return &api.ResourceOutput{
 		Ref: workerRoute.ID(),
