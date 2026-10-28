@@ -22,7 +22,6 @@ import (
 	"github.com/pkg/errors"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/simple-container-com/api/pkg/api"
-	"github.com/simple-container-com/api/pkg/api/logger"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
 	scPlugin "github.com/simple-container-com/api/pkg/plugin"
 	scpluginv1 "github.com/simple-container-com/api/pkg/plugin/proto/v1"
@@ -39,8 +38,12 @@ type cfPlugin struct {
 	config    *cfApi.RegistrarConfig
 	// progress is the plugin's side of the LogStream RPC. Non-nil at
 	// Serve() time; the gRPC server drains it via LogStream. The lifted
-	// registrar driver pushes to this through the context-threaded
-	// `pApi.ProvisionParams.Log` adaptor set up at ProvisionRegistrar.
+	// registrar driver pushes to this too, through the progressLogger
+	// handed to it as `pApi.ProvisionParams.Log` at ProvisionRegistrar.
+	//
+	// This comment described that adaptor before it existed — the driver
+	// was in fact given `logger.New()` and logged into the subprocess's
+	// stdout, where nothing read it. See progresslog.go.
 	progress *scPlugin.Publisher
 }
 
@@ -70,7 +73,22 @@ func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.Re
 }
 
 func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.ProvisionRegistrarRequest) (*scpluginv1.ProvisionRegistrarResponse, error) {
-	p.progress.Info("provision-registrar", fmt.Sprintf("initialising cloudflare registrar for zone %q", strVal(req.GetConfig()["zoneName"])))
+	// Say which zone is the CONFIGURED DEFAULT and which the stack asked for,
+	// because this line is emitted before the zone is resolved and in
+	// isolation it reads like the final answer. On the fleet the configured
+	// default is the catch-all `simple-container.com` while every stack
+	// overrides it, so a bare `for zone "simple-container.com"` here looks
+	// exactly like the wrong-zone defect this plugin was released to fix —
+	// it cost a reviewer time on run 40654637631, a run that had in fact
+	// resolved the override correctly. The `ready; zone …` line below is the
+	// authoritative one.
+	initZone := fmt.Sprintf("%q (configured default)", strVal(req.GetConfig()["zoneName"]))
+	if baseZone := req.GetBaseDnsZone(); baseZone != "" {
+		initZone += fmt.Sprintf(", stack prefers %q", baseZone)
+	} else {
+		initZone += ", stack states no preference"
+	}
+	p.progress.Info("provision-registrar", "initialising cloudflare registrar; zone "+initZone)
 	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -97,7 +115,15 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	if baseZone := req.GetBaseDnsZone(); baseZone != "" {
 		pref = &pApi.DnsPreference{BaseZone: baseZone}
 	}
-	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{Log: logger.New(), DnsPreference: pref})
+	// Log through the progress Publisher, NOT logger.New(). The driver's own
+	// Info lines ("configure CNAME DNS record …", the worker-script lines)
+	// went to the plugin subprocess's stdout and never reached the operator —
+	// zero of them appear in forge-notifier run 40654637631. See
+	// progresslog.go for why, and for the phase-coverage trap it closes.
+	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{
+		Log:           newProgressLogger(p.progress, "registrar"),
+		DnsPreference: pref,
+	})
 	if err != nil {
 		p.progress.Error("provision-registrar", "init failed: "+err.Error())
 		return nil, errors.Wrap(err, "init cloudflare registrar")
