@@ -46,8 +46,15 @@ func TestProgressLogger_PublishesDriverOutput(t *testing.T) {
 	Expect(batch[0].GetPhase()).To(Equal("registrar"))
 	Expect(batch[0].GetSeverity()).To(Equal(scpluginv1.LogSeverity_LOG_SEVERITY_INFO))
 
-	// Severity must survive the adaptor: SC core's LogStream consumer routes
-	// on it, so an Error arriving as Info is a silently downgraded failure.
+	// Severity must survive the adaptor, and this assertion is load-bearing
+	// rather than hygiene. SC core's LogStream consumer routes on severity, so
+	// an Error arriving as Info is a downgraded failure — and the adaptor makes
+	// that strictly worse than the bug it fixes. Before it, an Error and an Info
+	// were equally invisible; after it, a mis-severitied Error PRINTS, and reads
+	// as progress. The discarded channel carried the driver's Error paths too
+	// (`failed to create DNS record` was also 0 occurrences in run 40654637631),
+	// which is how a swallowed-provider-error mechanism got posited for the
+	// first incident on no evidence at all.
 	Expect(batch[1].GetSeverity()).To(Equal(scpluginv1.LogSeverity_LOG_SEVERITY_WARN))
 	Expect(batch[2].GetSeverity()).To(Equal(scpluginv1.LogSeverity_LOG_SEVERITY_ERROR))
 	Expect(batch[2].GetMessage()).To(Equal(`failed to create DNS record "x.example.com": boom`))
