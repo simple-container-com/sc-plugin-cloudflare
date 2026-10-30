@@ -12,7 +12,8 @@ const ProviderType = "cloudflare"
 func init() {
 	api.RegisterProviderConfig(api.ConfigRegisterMap{
 		// cloudflare
-		RegistrarType: ReadRegistrarConfig,
+		RegistrarType:                       ReadRegistrarConfig,
+		TemplateTypeCloudflareStaticWebsite: ReadPagesConfig,
 	})
 
 	// Fool-protection: when SC core has dropped the in-tree cloudflare
@@ -22,7 +23,10 @@ func init() {
 	// copy-paste-ready error at server.yaml parse time instead.
 	api.RegisterPluginRequirement(api.PluginRequirement{
 		PluginName: "cloudflare",
-		OwnedTypes: []string{RegistrarType},
+		OwnedTypes: []string{
+			RegistrarType,
+			TemplateTypeCloudflareStaticWebsite,
+		},
 		DefaultSource: api.PluginSource{
 			Type:       "github-release",
 			Repository: "simple-container-com/sc-plugin-cloudflare",

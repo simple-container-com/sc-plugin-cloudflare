@@ -51,8 +51,13 @@ func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpl
 	return &scpluginv1.SchemaResponse{
 		PluginVersion:  "cloudflare-0.0.1",
 		RegistrarTypes: []string{"cloudflare"},
+		ResourceTypes:  []string{cfApi.TemplateTypeCloudflareStaticWebsite},
 		PulumiPlugins: []*scpluginv1.PulumiPluginRequirement{
 			{Package: "cloudflare", Version: "6.17.0"},
+			// pulumi-command is used by cloudflare-static-website's wrangler
+			// pages deploy local.NewCommand step. Pin matches sc-plugin-aws's
+			// pin for the aws-static-website `aws s3 sync` step.
+			{Package: "command", Version: "1.2.1"},
 		},
 	}, nil
 }
