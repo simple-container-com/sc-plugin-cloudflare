@@ -4,6 +4,8 @@
 package cloudflare
 
 import (
+	"fmt"
+
 	cfImpl "github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
@@ -16,6 +18,33 @@ import (
 // *create* for a pattern that already exists and Cloudflare refuses it. State
 // forgets, the cloud remembers, and the stack is wedged — the retain flag makes
 // that a wedge by construction rather than a rare race.
+//
+// # ID-format regression on provider upgrade (handled, 2026-10-30)
+//
+// pulumi-cloudflare's WorkersRoute resource changed its ID format from a bare
+// uuid to a composite `<zone_id>/<route_id>` across v6 minor upgrades. State
+// written by an older provider carries the bare uuid, and the newer provider's
+// Read step refuses it mid-preview with
+//
+//	invalid ID: expected urlencoded segments "<zone_id>/<route_id>", got "<uuid>"
+//
+// Live-caught 2026-10-30 on forge-notifier staging; preview halted before any
+// other diff was visible. Two fixes together, both in `routeOptions` and in
+// `registrar.go`'s route resource name:
+//
+//  1. the Pulumi RESOURCE NAME for the route carries a `-v2` suffix so a
+//     stack with state at the old (bare-uuid) URN plans a *delete* of the old
+//     entry and a *create* of the new one. The delete is a no-op against
+//     Cloudflare because `sdk.RetainOnDelete(true)` means the engine drops the
+//     state entry WITHOUT calling the provider's Delete — so the broken ID
+//     never reaches the provider. The live route is undisturbed; the next
+//     create re-adopts it by pattern through the normal `routeOptions` path.
+//  2. the Import id handed to Pulumi is now the composite `<zone>/<route>`,
+//     matching what the newer provider's Read expects.
+//
+// Future pulumi-cloudflare upgrades that change the ID shape again should bump
+// the `-v2` suffix once per migration; the comment in `registrar.go` explains
+// how.
 //
 // The fleet had not hit the collision only because the create was also being
 // dropped between plan and apply (the separate, still-unidentified defect
@@ -112,6 +141,12 @@ func (r *provisioner) liveRoutes(ctx *sdk.Context) map[string]liveRoute {
 
 // routeOptions returns the resource options for a WorkersRoute registration,
 // adding sdk.Import when a route with this pattern already exists in the zone.
+//
+// The Import id is the composite `<zone_id>/<route_id>` — see the top-of-file
+// comment on the ID-format regression. `cfImpl.LookupWorkersRoutes` returns
+// `route.Id` as the bare uuid (that is what Cloudflare's REST API returns), so
+// we construct the composite here, once, instead of threading the zone through
+// each caller.
 func (r *provisioner) routeOptions(ctx *sdk.Context, pattern, script string, base ...sdk.ResourceOption) []sdk.ResourceOption {
 	live, exists := r.liveRoutes(ctx)[pattern]
 	if !exists {
@@ -125,5 +160,5 @@ func (r *provisioner) routeOptions(ctx *sdk.Context, pattern, script string, bas
 	} else {
 		r.log.Info(ctx.Context(), "adopting existing worker route %q (id %s) instead of creating it", pattern, live.id)
 	}
-	return append(base, sdk.Import(sdk.ID(live.id)))
+	return append(base, sdk.Import(sdk.ID(fmt.Sprintf("%s/%s", r.zone.ZoneId, live.id))))
 }

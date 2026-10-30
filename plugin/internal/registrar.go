@@ -195,7 +195,16 @@ func (r *provisioner) NewWorkerScript(ctx *sdk.Context, workerName string, hostN
 	if err != nil {
 		return nil, err
 	}
-	routeName := fmt.Sprintf("%s-route", ruleName)
+	// Pulumi RESOURCE NAME intentionally carries the `-v2` suffix: a stack with
+	// state at the pre-v2 URN (`<ruleName>-route`) plans a *delete* of the old
+	// entry and a *create* of the new one. The delete is a no-op against
+	// Cloudflare because `sdk.RetainOnDelete(true)` tells the engine to drop
+	// the state entry WITHOUT calling the provider's Delete — so the broken
+	// bare-uuid ID (pulumi-cloudflare v6 schema change) never reaches the
+	// provider; the live route is undisturbed; the create re-adopts it by
+	// pattern through `routeOptions`. See adopt.go for the full rationale.
+	// Future provider ID-shape changes bump the suffix once per migration.
+	routeName := fmt.Sprintf("%s-route-v2", ruleName)
 	routePattern := fmt.Sprintf("%s/*", hostName)
 	workerRoute, err := cfImpl.NewWorkersRoute(ctx, routeName, &cfImpl.WorkersRouteArgs{
 		ZoneId:  sdk.String(r.zone.ZoneId),
@@ -398,7 +407,10 @@ async function handleRequest(origRequest) {
 	}
 	ctx.Export(fmt.Sprintf("%s-script", ruleName), workerScript.ToWorkerScriptOutput())
 
-	routeName := fmt.Sprintf("%s-route", ruleName)
+	// -v2 suffix: see the matching comment in NewWorkerScript above and the
+	// top of adopt.go. Same one-time URN migration mechanism for every
+	// override-header rule's route.
+	routeName := fmt.Sprintf("%s-route-v2", ruleName)
 	routePattern := fmt.Sprintf("%s/*", rule.FromHost)
 	workerRoute, err := cfImpl.NewWorkersRoute(ctx, routeName, &cfImpl.WorkersRouteArgs{
 		ZoneId:  sdk.String(r.zone.ZoneId),

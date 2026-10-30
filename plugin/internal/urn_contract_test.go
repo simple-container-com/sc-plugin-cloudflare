@@ -167,7 +167,9 @@ func TestURNContract_DnsRecordName_DuplicateNames(t *testing.T) {
 
 // TestURNContract_WorkerScriptAndRouteName — a worker script lands under
 // "<workerName>-worker-script" and its matching route under
-// "<workerName>-worker-script-route". NewWorkerScript is on the concrete
+// "<workerName>-worker-script-route-v2" (the `-v2` suffix is the one-time
+// pulumi-cloudflare v6 ID-format migration — see adopt.go). NewWorkerScript
+// is on the concrete
 // *provisioner, not on the pApi.Registrar interface — same-package cast is
 // safe here (and documents the contract).
 func TestURNContract_WorkerScriptAndRouteName(t *testing.T) {
@@ -187,13 +189,15 @@ func TestURNContract_WorkerScriptAndRouteName(t *testing.T) {
 
 	Expect(m.namesByType("cloudflare:index/workerScript:WorkerScript")).To(Equal([]string{"my-worker-worker-script"}),
 		"WorkerScript resource name must be `<workerName>-worker-script`. Changing this invalidates existing state.")
-	Expect(m.namesByType("cloudflare:index/workersRoute:WorkersRoute")).To(Equal([]string{"my-worker-worker-script-route"}),
-		"WorkersRoute resource name must be `<workerName>-worker-script-route`. Changing this invalidates existing state.")
+	Expect(m.namesByType("cloudflare:index/workersRoute:WorkersRoute")).To(Equal([]string{"my-worker-worker-script-route-v2"}),
+		"WorkersRoute resource name is `<workerName>-worker-script-route-v2`. The `-v2` is a one-time URN migration for the pulumi-cloudflare v6 ID-format change (bare uuid → `<zone>/<route>` composite). See adopt.go top-of-file comment; changing this invalidates existing state without justification.")
 }
 
 // TestURNContract_OverrideHeaderRuleName — NewOverrideHeaderRule produces a
 // worker script and a workers route whose names derive from the stack + rule
-// name: "<stack><rule>-host-override-{script,route}". The DNS record is
+// name: "<stack><rule>-host-override-script" and
+// "<stack><rule>-host-override-route-v2" (the `-v2` suffix is the one-time
+// pulumi-cloudflare v6 ID-format migration — see adopt.go). The DNS record is
 // handled by NewRecord (see TestURNContract_DnsRecordName); this test asserts
 // only the worker/route sides, matching the in-tree test.
 func TestURNContract_OverrideHeaderRuleName(t *testing.T) {
@@ -218,6 +222,6 @@ func TestURNContract_OverrideHeaderRuleName(t *testing.T) {
 		"mystackmyservice-host-override-script",
 	}))
 	Expect(m.namesByType("cloudflare:index/workersRoute:WorkersRoute")).To(Equal([]string{
-		"mystackmyservice-host-override-route",
-	}))
+		"mystackmyservice-host-override-route-v2",
+	}), "WorkersRoute resource name carries the `-v2` suffix for the pulumi-cloudflare v6 ID-format migration. See adopt.go.")
 }

@@ -94,8 +94,8 @@ func TestAdopt_ExistingRouteIsImported(t *testing.T) {
 	})
 
 	Expect(m.routeImportIDs()).To(Equal(map[string]string{
-		"api.example.com/*": "563d29dd3d564d7fb8b53d4dd39214ba",
-	}), "an existing route must be registered with sdk.Import(<live id>) so the engine adopts it instead of creating a duplicate pattern")
+		"api.example.com/*": "zone-id-mock/563d29dd3d564d7fb8b53d4dd39214ba",
+	}), "an existing route must be registered with sdk.Import(<zone>/<route>) so the engine adopts it instead of creating a duplicate pattern. The composite shape is the pulumi-cloudflare v6 ID format — a bare uuid here causes `invalid ID: expected urlencoded segments \"<zone_id>/<route_id>\"` on refresh. See adopt.go top-of-file comment.")
 	Expect(*calls).To(Equal(1))
 }
 
@@ -116,8 +116,8 @@ func TestAdopt_ExistingRouteIsImported_OverrideHeaderRule(t *testing.T) {
 	})
 
 	Expect(m.routeImportIDs()).To(Equal(map[string]string{
-		"app.example.com/*": "route-id-override",
-	}))
+		"app.example.com/*": "zone-id-mock/route-id-override",
+	}), "override-header rule's route must also carry the composite `<zone>/<route>` Import id — same pulumi-cloudflare v6 ID shape as the WorkerScript route.")
 }
 
 // A fresh stack in a zone holding unrelated routes must still plan a plain
@@ -180,7 +180,36 @@ func TestAdopt_ScriptMismatchStillAdopts(t *testing.T) {
 		return err
 	})
 
-	Expect(m.routeImportIDs()).To(Equal(map[string]string{"api.example.com/*": "stale-route-id"}))
+	Expect(m.routeImportIDs()).To(Equal(map[string]string{"api.example.com/*": "zone-id-mock/stale-route-id"}))
+}
+
+// Both the WorkerScript's route and the OverrideHeaderRule's route must carry
+// the `-v2` suffix in their Pulumi resource name. Changing this suffix
+// invalidates every existing stack's state entry at the pre-v2 URN, which is
+// the whole point — see adopt.go's top-of-file comment on the pulumi-cloudflare
+// v6 ID-format migration. Removing the suffix without a corresponding bump
+// elsewhere would re-expose the "invalid ID: expected urlencoded segments
+// <zone_id>/<route_id>" preview failure that this plugin exists to prevent.
+func TestAdopt_RouteNameHasV2Suffix(t *testing.T) {
+	RegisterTestingT(t)
+
+	lister, _ := fakeLister() // no live routes — plain create path
+	m := withFakeLister(t, lister, func(ctx *pulumi.Context, prov *provisioner) error {
+		if _, err := prov.NewWorkerScript(ctx, "my-worker", "api.example.com", "// script"); err != nil {
+			return err
+		}
+		_, err := prov.NewOverrideHeaderRule(ctx, api.Stack{Name: "mystack"}, pApi.OverrideHeaderRule{
+			Name:     "myservice",
+			FromHost: "app.example.com",
+			ToHost:   pulumi.String("origin.example.net").ToStringOutput(),
+		})
+		return err
+	})
+
+	Expect(m.namesByType(workersRouteType)).To(ConsistOf(
+		"my-worker-worker-script-route-v2",
+		"mystackmyservice-host-override-route-v2",
+	), "both WorkersRoute call sites must emit `-v2` for the one-time URN migration")
 }
 
 // The zone is listed once per deploy, not once per route. Two registrations,
@@ -204,7 +233,7 @@ func TestAdopt_ZoneIsListedOncePerDeploy(t *testing.T) {
 
 	Expect(m.routeImportIDs()).To(Equal(map[string]string{
 		"api.example.com/*": "",
-		"app.example.com/*": "route-id-override",
+		"app.example.com/*": "zone-id-mock/route-id-override",
 	}))
 	Expect(*calls).To(Equal(1))
 }
