@@ -193,33 +193,55 @@ func contentTypeOf(relPath string) string {
 // doJSON issues a JSON HTTP request against the CF API with the given
 // bearer token, retrying transient errors with exponential backoff.
 // `out` is unmarshalled from the `.result` field of the envelope.
+//
+// Each attempt gets a 60-second per-request context deadline. The outer
+// `u.client.Timeout` is 2 minutes and is the belt; this is the braces,
+// because a hung TLS handshake or stuck TCP connect on the deploy image
+// has been observed to miss `client.Timeout` entirely (navizon run
+// 41195707959, 2026-10-31 — 20-min hang on upload-token before manual
+// cancel). The per-request `context.WithTimeout` guarantees forward
+// progress whatever the net stack is doing.
 func (u *pagesUploader) doJSON(ctx context.Context, method, url, bearer string, body any, out any) error {
-	var reqBody io.Reader
+	var reqBodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return errors.Wrap(err, "marshal request body")
 		}
-		reqBody = bytes.NewReader(b)
+		reqBodyBytes = b
 	}
 	var lastErr error
 	for attempt := 1; attempt <= uploadAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		// A fresh reader on each attempt — bytes.Reader is one-shot,
+		// so re-trying with the same reader otherwise sends an empty
+		// body silently.
+		var reqBody io.Reader
+		if reqBodyBytes != nil {
+			reqBody = bytes.NewReader(reqBodyBytes)
+		}
+		reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, method, url, reqBody)
 		if err != nil {
+			cancel()
 			return errors.Wrap(err, "build request")
 		}
 		req.Header.Set("Authorization", "Bearer "+bearer)
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
+		fmt.Fprintf(os.Stderr, "[uploader] attempt %d/%d: %s %s\n", attempt, uploadAttempts, method, url)
 		resp, err := u.client.Do(req)
 		if err != nil {
+			cancel()
 			lastErr = err
+			fmt.Fprintf(os.Stderr, "[uploader] attempt %d/%d: %s %s -> ERROR %v\n", attempt, uploadAttempts, method, url, err)
 			time.Sleep(backoffDelay(attempt))
 			continue
 		}
 		respBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel()
+		fmt.Fprintf(os.Stderr, "[uploader] attempt %d/%d: %s %s -> %d (%d bytes)\n", attempt, uploadAttempts, method, url, resp.StatusCode, len(respBody))
 		if readErr != nil {
 			lastErr = readErr
 			time.Sleep(backoffDelay(attempt))

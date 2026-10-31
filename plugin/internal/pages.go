@@ -81,7 +81,19 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	// resolved from the Create's response and (b) the network call only
 	// fires at Apply, not Preview. We attach the upload result as an
 	// Output so it participates in the resource graph for logging.
+	//
+	// `ctx.DryRun()` guard: Pulumi SDK will fire this ApplyT during
+	// preview if `project.Name` resolves to a known value (which it does
+	// here, since the input is a plain string literal). During preview
+	// the PagesProject itself hasn't been created on Cloudflare, so an
+	// upload-token GET against a nonexistent project either hangs on
+	// the net stack (observed: navizon run 41195707959, 2026-10-31,
+	// 20-min hang before manual cancel) or 404s. Skip the upload during
+	// preview and only fire at apply.
 	deployment := project.Name.ApplyT(func(name string) (string, error) {
+		if ctx.DryRun() {
+			return "preview-no-deploy", nil
+		}
 		uploader := newPagesUploader(cfg.Credentials.Credentials, cfg.AccountId)
 		res, uerr := uploader.uploadBundle(
 			ctx.Context(),

@@ -324,14 +324,27 @@ func refToString(ref any) string {
 }
 
 func main() {
+	// Full goroutine traces on panic. Same reason sc-plugin-aws +
+	// sc-plugin-mongodb both set this: Go's default `single` traceback
+	// often omits the goroutine where a nil-ptr fires.
+	_ = os.Setenv("GOTRACEBACK", "all")
 	impl := &cfPlugin{
 		progress: scPlugin.NewPublisher(0),
 	}
 	scPlugin.Serve(scPlugin.ServerConfig{
 		Impl: impl,
+		// Debug level forwards subprocess stderr (which carries our
+		// uploader progress fprintfs + any panic header/trace) through
+		// SC core's hclog pipeline. Keeping it at Warn (the previous
+		// value) drops those diagnostics — observed empirically on
+		// navizon run 41195707959 (2026-10-31) where the uploader
+		// hung on upload-token and we had no in-flight log line to
+		// confirm whether the HTTP request even completed. api PR #522
+		// dropped the SC-core-side filter to Debug; this change does
+		// the same on the plugin side so diagnostics make it out.
 		Logger: hclog.New(&hclog.LoggerOptions{
 			Name:   "sc-plugin-cloudflare",
-			Level:  hclog.Warn,
+			Level:  hclog.Debug,
 			Output: os.Stderr,
 		}),
 	})
