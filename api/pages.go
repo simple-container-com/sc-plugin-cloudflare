@@ -59,17 +59,56 @@ func ReadTemplateConfig(config *api.Config) (api.Config, error) {
 // deployments); defaults to "main" in the driver when empty.
 type PagesInput struct {
 	TemplateConfig        `json:"templateConfig" yaml:"templateConfig"`
-	api.StackConfigStatic `json:",inline" yaml:",inline"`
+	api.StackConfigStatic `json:",inline"        yaml:",inline"`
 	StackDir              string `json:"stackDir"                   yaml:"stackDir"`
 	StackName             string `json:"stackName"                  yaml:"stackName"`
 	ProductionBranch      string `json:"productionBranch,omitempty" yaml:"productionBranch,omitempty"`
+
+	// Flat mirrors of StackConfigStatic.Site.* — populated by
+	// ToPagesConfig from stackCfg.Site. The wire-decode gap: `Site
+	// StaticSiteConfig` is a NAMED field with `json:",inline"`, but
+	// Go's encoding/json ignores the ",inline" option on a named
+	// (non-anonymous) field, so SC core's `serializeConfigToInputs`
+	// serialises `"Site": {...}` nested. The plugin's `decodeInputsAs`
+	// then does `yaml.Marshal(plain) + yaml.Unmarshal(bytes, out)`,
+	// and the yaml library treats `Site:` as a KEY while the Go
+	// struct expects the inner fields at the PARENT level — so the
+	// `Site:` subtree is dropped silently and `cfg.Site.Domain` is
+	// "". Live-caught 2026-10-31 on navizon-landing: PagesProject
+	// created without a `domain:` binding, old aws CNAME deleted, no
+	// new CNAME, navizon.atriumdev.app public DNS broke until this
+	// field was wired. Fix is pragmatic rather than fundamental:
+	// expose the three Site.* fields the Pages driver reads at the
+	// top of PagesInput, populate from stackCfg.Site in
+	// ToPagesConfig, and read these in StaticWebsite with a
+	// stackCfg.Site.* fallback for callers who build PagesInput by
+	// hand. A proper fix lives in the api repo — flatten the
+	// Site inline round-trip; see 04 §V.
+	Domain        string `json:"domain,omitempty"        yaml:"domain,omitempty"`
+	BaseDnsZone   string `json:"baseDnsZone,omitempty"   yaml:"baseDnsZone,omitempty"`
+	IndexDocument string `json:"indexDocument,omitempty" yaml:"indexDocument,omitempty"`
+	ErrorDocument string `json:"errorDocument,omitempty" yaml:"errorDocument,omitempty"`
 }
 
 // OverriddenBaseZone implements api.DnsConfigAware so the Cloudflare registrar
 // uses the stack's own baseDnsZone instead of the parent registrar's default.
-// Same pattern as sc-plugin-aws/api/static_website.go.
+// Prefers the top-level BaseDnsZone (populated by ToPagesConfig) with a
+// Site.BaseDnsZone fallback for callers who construct PagesInput directly.
 func (i *PagesInput) OverriddenBaseZone() string {
+	if i.BaseDnsZone != "" {
+		return i.BaseDnsZone
+	}
 	return i.Site.BaseDnsZone
+}
+
+// EffectiveDomain returns the custom domain to bind, with the top-level
+// Domain field preferred over Site.Domain (the latter is dropped on the
+// plugin bus — see PagesInput.Domain for the full story).
+func (i *PagesInput) EffectiveDomain() string {
+	if i.Domain != "" {
+		return i.Domain
+	}
+	return i.Site.Domain
 }
 
 // ToPagesConfig is the client-side converter registered under
@@ -92,5 +131,11 @@ func ToPagesConfig(tpl any, stackDir, stackName string, stackCfg *api.StackConfi
 		StackConfigStatic: *stackCfg,
 		StackDir:          stackDir,
 		StackName:         stackName,
+		// Flat mirrors — see field docs. Carry Site.* out to the top
+		// so the json+yaml round-trip on the plugin bus preserves them.
+		Domain:        stackCfg.Site.Domain,
+		BaseDnsZone:   stackCfg.Site.BaseDnsZone,
+		IndexDocument: stackCfg.Site.IndexDocument,
+		ErrorDocument: stackCfg.Site.ErrorDocument,
 	}, nil
 }
