@@ -25,30 +25,28 @@ import (
 //
 // Four resources, in order:
 //
-//  1. cfImpl.NewPagesProject — a project with nil Source for Direct Upload mode
-//     (the pulumi-cloudflare SDK has no NewPagesDeployment resource, so the
-//     deployment itself happens via wrangler in #2)
+//  1. cfImpl.NewPagesProject — Direct Upload mode (nil Source). pulumi-cloudflare
+//     v6.17.0 has no NewPagesDeployment resource, so the deployment itself
+//     happens via wrangler in #2.
 //  2. local.NewCommand running `wrangler pages deploy <bundleDir>` with the
 //     Cloudflare token + account id passed via env. Triggers on the md5 of the
 //     bundleDir's recursive content checksum, so a deploy with no file changes
-//     is a Pulumi no-op
-//  3. cfImpl.NewPagesDomain — the custom-domain binding (only if cfg.Domain
-//     is set)
-//  4. params.Registrar.NewRecord — CNAME `<domain>` → `<stackName>.pages.dev`,
-//     proxied through Cloudflare (only if cfg.Domain is set)
+//     is a Pulumi no-op.
+//  3. cfImpl.NewPagesDomain — the custom-domain binding (only if cfg.Site.Domain
+//     is set).
+//  4. params.Registrar.NewRecord — CNAME `<domain>` → `<project>.pages.dev`,
+//     proxied through Cloudflare (only if cfg.Site.Domain is set).
 //
-// Mirrors sc-plugin-aws/plugin/internal/static_website.go on purpose — the two
-// drivers are isomorphic (bucket+policy ↔ project; sync-command ↔ wrangler
-// deploy; registrar CNAME ↔ registrar CNAME). See
-// forge/docs/design/2026-10-31/cloudflare-pages-direct-upload/README.md for
-// the full design.
+// Mirrors sc-plugin-aws/plugin/internal/static_website.go on purpose — the
+// drivers are isomorphic (bucket+policy ↔ project ; sync-command ↔ wrangler
+// deploy ; registrar CNAME ↔ registrar CNAME).
 func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, params pApi.ProvisionParams) (*api.ResourceOutput, error) {
 	if input.Descriptor.Type != cfApi.TemplateTypeCloudflareStaticWebsite {
 		return nil, errors.Errorf("unsupported template type %q", input.Descriptor.Type)
 	}
-	cfg, ok := input.Descriptor.Config.Config.(*cfApi.PagesConfig)
+	cfg, ok := input.Descriptor.Config.Config.(*cfApi.PagesInput)
 	if !ok {
-		return nil, errors.Errorf("failed to convert config to *cloudflare.PagesConfig for %q (got %T)",
+		return nil, errors.Errorf("failed to convert config to *cloudflare.PagesInput for %q (got %T)",
 			input.Descriptor.Type, input.Descriptor.Config.Config)
 	}
 	if cfg.AccountId == "" {
@@ -80,9 +78,6 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	}
 
 	// Checksum the bundle so Triggers fire only on real content changes.
-	// Mirrors aws-static-website's shape, minus the timestamp-override hack
-	// that file notes as temporary — Pages v1 goes with the real checksum so
-	// a repeat deploy of unchanged files is a Pulumi no-op.
 	dir, err := directory_checksum.ScanDirectory(bundleDir, afero.NewOsFs())
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to scan bundleDir %q", bundleDir)
@@ -95,14 +90,9 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	bundleChecksum := hex.EncodeToString(sum[:])
 	params.Log.Info(ctx.Context(), "cloudflare pages bundleDir %q checksum: %s", bundleDir, bundleChecksum)
 
-	// wrangler is the uploader. Options evaluated in the design doc §Decision:
-	// direct-REST would remove the operator-machine dependency on wrangler
-	// but is significantly more code for no concrete v1 need. The Pulumi SDK
-	// does not expose NewPagesDeployment, so the deployment has to happen
-	// outside the resource graph either way.
-	//
-	// Credentials passed via env, not interpolated into the command string,
-	// so they do not land in Pulumi state or in `pulumi preview --json`.
+	// wrangler is the uploader. Credentials passed via env, not interpolated
+	// into the command string, so they do not land in Pulumi state or in
+	// `pulumi preview --json`.
 	deployCmd := sdk.Sprintf(
 		"wrangler pages deploy %s --project-name=%s --branch=%s --commit-dirty=true",
 		bundleDir, projectName, productionBranch,
@@ -121,7 +111,7 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	}
 
 	// No domain → serve on <project>.pages.dev only.
-	if cfg.Domain == "" {
+	if cfg.Site.Domain == "" {
 		params.Log.Info(ctx.Context(),
 			"cloudflare pages project %q has no `domain:` set; site will serve at %s.pages.dev",
 			projectName, projectName)
@@ -129,32 +119,32 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	}
 
 	// Custom-domain binding + Registrar CNAME.
-	params.Log.Info(ctx.Context(), "configure cloudflare pages custom domain %q...", cfg.Domain)
+	params.Log.Info(ctx.Context(), "configure cloudflare pages custom domain %q...", cfg.Site.Domain)
 	_, err = cfImpl.NewPagesDomain(ctx, fmt.Sprintf("%s-domain", stack.Name), &cfImpl.PagesDomainArgs{
 		AccountId:   sdk.String(cfg.AccountId),
 		ProjectName: project.Name,
-		Name:        sdk.String(cfg.Domain),
+		Name:        sdk.String(cfg.Site.Domain),
 	}, sdk.DependsOn([]sdk.Resource{project}))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to attach cloudflare pages domain %q to project %q", cfg.Domain, projectName)
+		return nil, errors.Wrapf(err, "failed to attach cloudflare pages domain %q to project %q", cfg.Site.Domain, projectName)
 	}
 
 	if params.Registrar == nil {
 		return nil, errors.Errorf(
 			"cloudflare-static-website %q sets `domain: %s` but no registrar is configured on this stack — "+
 				"add a `resources.registrars.cloudflare` entry on the parent so SC can create the CNAME",
-			stack.Name, cfg.Domain,
+			stack.Name, cfg.Site.Domain,
 		)
 	}
 	cnameTarget := fmt.Sprintf("%s.pages.dev", projectName)
 	_, err = params.Registrar.NewRecord(ctx, api.DnsRecord{
-		Name:     cfg.Domain,
+		Name:     cfg.Site.Domain,
 		Type:     "CNAME",
 		ValueOut: sdk.String(cnameTarget).ToStringOutput(),
 		Proxied:  true,
 	})
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to provision CNAME %q → %q", cfg.Domain, cnameTarget)
+		return nil, errors.Wrapf(err, "failed to provision CNAME %q → %q", cfg.Site.Domain, cnameTarget)
 	}
 
 	return &api.ResourceOutput{Ref: project}, nil

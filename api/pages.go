@@ -3,69 +3,94 @@
 
 package cloudflare
 
-import "github.com/simple-container-com/api/pkg/api"
+import (
+	"github.com/pkg/errors"
+	"github.com/simple-container-com/api/pkg/api"
+)
 
-// TemplateTypeCloudflareStaticWebsite is the `template:` / `type:` token for a
-// static site served from Cloudflare Pages via Direct Upload. See
-// forge/docs/design/2026-10-31/cloudflare-pages-direct-upload/README.md.
+// TemplateTypeCloudflareStaticWebsite is the `type:` discriminator the plugin
+// advertises for a static site served from Cloudflare Pages via Direct
+// Upload. See forge/docs/design/2026-10-31/cloudflare-pages-direct-upload/.
 //
-// Shape:
+// Shape in the parent server.yaml `templates:` block:
 //
-//	template: cloudflare-static-website
-//	config:
-//	  credentials: ${auth:cloudflare}
-//	  accountId:   ${auth:cloudflare.accountId}
-//	  bundleDir:   dist
-//	  domain:      www.simple-forge.com   # optional
-//	  productionBranch: main               # optional, defaults to "main"
+//	templates:
+//	  cloudflare-static-website:
+//	    type: cloudflare-static-website
+//	    config:
+//	      credentials: ${secret:CLOUDFLARE_API_TOKEN}
+//	      accountId:   e2207ddedc3cfe4e321f72b07e0592b5
 //
-// The driver reads these fields and provisions four resources in order:
-// PagesProject (Direct Upload — nil Source), local.NewCommand running
-// `wrangler pages deploy <bundleDir>`, PagesDomain (if domain), and a
-// Registrar CNAME pointing <domain> at <project>.pages.dev.
+// Shape in the client stack `client.yaml`:
+//
+//	stacks:
+//	  staging:
+//	    type: static
+//	    template: cloudflare-static-website
+//	    config:
+//	      bundleDir: ${git:root}/sites/<name>/public
+//	      domain: <name>.example.com
+//	      baseDnsZone: example.com
+//	      indexDocument: index.html
+//	      errorDocument: index.html
+//	      productionBranch: main    # optional
 const TemplateTypeCloudflareStaticWebsite = "cloudflare-static-website"
 
-// PagesConfig is the on-the-wire config for a cloudflare-static-website stack.
-//
-// Credentials: the Cloudflare API token with scopes `Pages:Edit` + `Account:Read`
-// (Pages:Edit covers Project + Deployment + Domain CRUD; Account:Read is
-// required by cfImpl.NewPagesProject's AccountId lookup). Mint via the
-// Cloudflare dashboard; no SC-side provisioning of the token.
-//
-// AccountId: Cloudflare account id. Same value as the DNS registrar's accountId,
-// which is why both come out of `${auth:cloudflare}`.
-//
-// BundleDir: path to the pre-built static assets relative to the stack's
-// working directory. Mirrors `aws-static-website`'s `bundleDir`. The operator
-// is expected to run their own build before `sc deploy` — v1 ships no
-// in-plugin bundler.
-//
-// Domain: optional. If set, the plugin provisions PagesDomain and the Registrar
-// CNAME. If empty, the site is reachable only at `<stackName>.pages.dev`.
-//
-// ProductionBranch: optional, defaults to "main" in the driver. Pages uses this
-// as the branch label for direct-upload deployments (bookkeeping only; direct
-// upload is not git-tied).
-type PagesConfig struct {
-	AuthConfig       `json:",inline" yaml:",inline"`
-	BundleDir        string `json:"bundleDir"                  yaml:"bundleDir"`
-	Domain           string `json:"domain,omitempty"           yaml:"domain,omitempty"`
-	ProductionBranch string `json:"productionBranch,omitempty" yaml:"productionBranch,omitempty"`
+// TemplateConfig is the parent-side template config for Pages — exactly the
+// cloudflare account coordinates. Mirrors sc-plugin-aws/api/aws.go
+// `TemplateConfig` which embeds `AccountConfig`; here `AuthConfig` plays the
+// same role (same fields: Credentials + AccountId).
+type TemplateConfig struct {
+	AuthConfig `json:",inline" yaml:",inline"`
 }
 
-// ReadPagesConfig is the api.ConfigRegisterMap entry for the template, used by
-// SC core's server.yaml parser. Mirrors ReadRegistrarConfig.
-func ReadPagesConfig(config *api.Config) (api.Config, error) {
-	return api.ConvertConfig(config, &PagesConfig{})
+// ReadTemplateConfig is the api.ConfigRegisterMap entry for the template
+// type, used by SC core's server.yaml parser to decode the `templates:` block.
+func ReadTemplateConfig(config *api.Config) (api.Config, error) {
+	return api.ConvertConfig(config, &TemplateConfig{})
 }
 
-// OverriddenBaseZone makes PagesConfig satisfy api.DnsConfigAware so a stack
-// using a multi-zone cloudflare registrar can tell SC core which base zone
-// to look up for the CNAME. Returns "" when no Domain is set (no DNS record
-// is provisioned, so no base zone is required).
-func (c *PagesConfig) OverriddenBaseZone() string {
-	// Return the full domain; SC core's registrar lookup consults
-	// DnsPreference.BaseZone and matches by suffix (see
-	// pkg/clouds/pulumi/plugin_sidecars.go resolvePluginRegistrar).
-	return c.Domain
+// PagesInput is the merged shape the plugin's Provision handler receives at
+// deploy-time: the parent-side TemplateConfig (credentials + accountId) plus
+// the client-side StackConfigStatic (bundleDir + domain + baseDnsZone + index
+// / error documents). Mirrors sc-plugin-aws's StaticSiteInput exactly.
+//
+// ProductionBranch is a Pages-only knob (branch label for direct-upload
+// deployments); defaults to "main" in the driver when empty.
+type PagesInput struct {
+	TemplateConfig        `json:"templateConfig" yaml:"templateConfig"`
+	api.StackConfigStatic `json:",inline" yaml:",inline"`
+	StackDir              string `json:"stackDir"                   yaml:"stackDir"`
+	StackName             string `json:"stackName"                  yaml:"stackName"`
+	ProductionBranch      string `json:"productionBranch,omitempty" yaml:"productionBranch,omitempty"`
+}
+
+// OverriddenBaseZone implements api.DnsConfigAware so the Cloudflare registrar
+// uses the stack's own baseDnsZone instead of the parent registrar's default.
+// Same pattern as sc-plugin-aws/api/static_website.go.
+func (i *PagesInput) OverriddenBaseZone() string {
+	return i.Site.BaseDnsZone
+}
+
+// ToPagesConfig is the client-side converter registered under
+// api.RegisterCloudStaticSiteConverter — SC core calls it after resolving the
+// parent template config and client stack config, so the plugin receives one
+// merged struct. Mirrors sc-plugin-aws's ToStaticSiteConfig.
+func ToPagesConfig(tpl any, stackDir, stackName string, stackCfg *api.StackConfigStatic) (any, error) {
+	templateCfg, ok := tpl.(*TemplateConfig)
+	if !ok {
+		return nil, errors.Errorf("template config is not of type cloudflare.TemplateConfig (got %T)", tpl)
+	}
+	if templateCfg == nil {
+		return nil, errors.New("template config is nil")
+	}
+	if stackCfg == nil {
+		return nil, errors.New("stack config is nil")
+	}
+	return &PagesInput{
+		TemplateConfig:    *templateCfg,
+		StackConfigStatic: *stackCfg,
+		StackDir:          stackDir,
+		StackName:         stackName,
+	}, nil
 }

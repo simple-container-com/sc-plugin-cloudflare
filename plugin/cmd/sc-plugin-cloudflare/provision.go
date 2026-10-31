@@ -128,7 +128,10 @@ func (p *cfPlugin) Provision(ctx context.Context, req *scpluginv1.ProvisionReque
 func decodeTypedConfig(resourceType string, inputs map[string]*scpluginv1.InputValue) (any, error) {
 	switch resourceType {
 	case cfApi.TemplateTypeCloudflareStaticWebsite:
-		cfg := &cfApi.PagesConfig{}
+		// SC core runs ToPagesConfig server-side; the Inputs map
+		// SC-core sends is the serialised *PagesInput. Decode into
+		// that same shape so the driver's type assertion lands.
+		cfg := &cfApi.PagesInput{}
 		return cfg, decodeInputsAs(inputs, cfg)
 	default:
 		return nil, errors.Errorf("sc-plugin-cloudflare has no config decoder for %q", resourceType)

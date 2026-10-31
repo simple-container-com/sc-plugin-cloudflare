@@ -20,8 +20,7 @@ import (
 
 // URN contract for cloudflare-static-website. The driver produces four
 // resources whose names derive from stack.Name; a future rename would
-// replace+destroy every live Pages project on upgrade. Mirrors
-// urn_contract_test.go's shape.
+// replace+destroy every live Pages project on upgrade.
 
 type pagesMocks struct {
 	mu       sync.Mutex
@@ -54,8 +53,7 @@ func (m *pagesMocks) namesByType(typeToken string) []string {
 
 // capturingRegistrar is a stand-in for params.Registrar that records every
 // NewRecord call. The driver only calls NewRecord; the other interface
-// methods are not exercised by cloudflare-static-website and panic if hit
-// (unexpected call = test bug worth surfacing).
+// methods are not exercised by cloudflare-static-website and panic if hit.
 type capturingRegistrar struct {
 	records []api.DnsRecord
 }
@@ -79,14 +77,30 @@ func (r *capturingRegistrar) ProvisionDomainForEndpoint(_ *sdk.Context, _ api.St
 	panic("ProvisionDomainForEndpoint is not called by cloudflare-static-website")
 }
 
-func newPagesInput(stackName string, cfg *cfApi.PagesConfig) (api.Stack, api.ResourceInput) {
+func newPagesInput(stackName string, in *cfApi.PagesInput) (api.Stack, api.ResourceInput) {
 	return api.Stack{Name: stackName}, api.ResourceInput{
 		Descriptor: &api.ResourceDescriptor{
 			Type:   cfApi.TemplateTypeCloudflareStaticWebsite,
 			Name:   stackName,
-			Config: api.Config{Config: cfg},
+			Config: api.Config{Config: in},
 		},
 		StackParams: &api.StackParams{StackName: stackName, Environment: "staging"},
+	}
+}
+
+// baseInput returns a minimally-valid PagesInput — pass to builders that
+// then overlay fields for a specific test case.
+func baseInput(bundleDir string) *cfApi.PagesInput {
+	return &cfApi.PagesInput{
+		TemplateConfig: cfApi.TemplateConfig{
+			AuthConfig: cfApi.AuthConfig{
+				Credentials: api.Credentials{Credentials: "test-token"},
+				AccountId:   "acct-abc",
+			},
+		},
+		StackConfigStatic: api.StackConfigStatic{
+			BundleDir: bundleDir,
+		},
 	}
 }
 
@@ -102,14 +116,9 @@ func TestPages_URNContract_NoDomain(t *testing.T) {
 	m := &pagesMocks{}
 	reg := &capturingRegistrar{}
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		stack, input := newPagesInput("mysite", &cfApi.PagesConfig{
-			AuthConfig: cfApi.AuthConfig{
-				Credentials: api.Credentials{Credentials: "test-token"},
-				AccountId:   "acct-abc",
-			},
-			BundleDir:        tmp,
-			ProductionBranch: "main",
-		})
+		cfg := baseInput(tmp)
+		cfg.ProductionBranch = "main"
+		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{
 			Log:       logger.New(),
 			Registrar: reg,
@@ -130,7 +139,7 @@ func TestPages_URNContract_NoDomain(t *testing.T) {
 
 // TestPages_URNContract_WithDomain — a stack with `domain:` adds a
 // PagesDomain named `<stack>-domain` and a Registrar CNAME at
-// cfg.Domain → `<stack>.pages.dev`, proxied.
+// cfg.Site.Domain → `<stack>.pages.dev`, proxied.
 func TestPages_URNContract_WithDomain(t *testing.T) {
 	RegisterTestingT(t)
 
@@ -139,14 +148,9 @@ func TestPages_URNContract_WithDomain(t *testing.T) {
 	m := &pagesMocks{}
 	reg := &capturingRegistrar{}
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		stack, input := newPagesInput("mysite", &cfApi.PagesConfig{
-			AuthConfig: cfApi.AuthConfig{
-				Credentials: api.Credentials{Credentials: "test-token"},
-				AccountId:   "acct-abc",
-			},
-			BundleDir: tmp,
-			Domain:    "www.example.com",
-		})
+		cfg := baseInput(tmp)
+		cfg.Site.Domain = "www.example.com"
+		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{
 			Log:       logger.New(),
 			Registrar: reg,
@@ -177,18 +181,28 @@ func TestPages_URNContract_WithDomain(t *testing.T) {
 		"CNAME target is `<stack>.pages.dev`. The pages.dev subdomain IS the stack-level default URL Cloudflare assigns the project.")
 }
 
+// TestPages_OverriddenBaseZone — the input must honour the stack-side
+// baseDnsZone so the registrar picks the right Cloudflare zone (not the
+// parent registrar's default). Mirrors sc-plugin-aws's shape.
+func TestPages_OverriddenBaseZone(t *testing.T) {
+	RegisterTestingT(t)
+
+	cfg := baseInput("/tmp/x")
+	cfg.Site.Domain = "foo.atriumdev.app"
+	cfg.Site.BaseDnsZone = "atriumdev.app"
+
+	Expect(cfg.OverriddenBaseZone()).To(Equal("atriumdev.app"),
+		"OverriddenBaseZone must return cfg.Site.BaseDnsZone — otherwise the registrar writes the CNAME into the wrong zone.")
+}
+
 // TestPages_RejectsEmptyBundleDir — a config with no BundleDir fails early
 // with a config error, not a cryptic ScanDirectory error.
 func TestPages_RejectsEmptyBundleDir(t *testing.T) {
 	RegisterTestingT(t)
 
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		stack, input := newPagesInput("mysite", &cfApi.PagesConfig{
-			AuthConfig: cfApi.AuthConfig{
-				Credentials: api.Credentials{Credentials: "t"},
-				AccountId:   "acct",
-			},
-		})
+		cfg := baseInput("")
+		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{Log: logger.New()})
 		return err
 	}, sdk.WithMocks("test-project", "test-stack", &pagesMocks{}))
@@ -202,12 +216,9 @@ func TestPages_RejectsEmptyAccountId(t *testing.T) {
 	RegisterTestingT(t)
 
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		stack, input := newPagesInput("mysite", &cfApi.PagesConfig{
-			AuthConfig: cfApi.AuthConfig{
-				Credentials: api.Credentials{Credentials: "t"},
-			},
-			BundleDir: t.TempDir(),
-		})
+		cfg := baseInput(t.TempDir())
+		cfg.AccountId = ""
+		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{Log: logger.New()})
 		return err
 	}, sdk.WithMocks("test-project", "test-stack", &pagesMocks{}))
@@ -217,21 +228,15 @@ func TestPages_RejectsEmptyAccountId(t *testing.T) {
 
 // TestPages_RejectsDomainWithoutRegistrar — a config that asks for a
 // custom domain but has no params.Registrar must fail with the error that
-// names the parent server.yaml fix. Catches the forge-notifier-shaped
-// "silent CNAME → empty" defect at config time rather than deploy time.
+// names the parent server.yaml fix.
 func TestPages_RejectsDomainWithoutRegistrar(t *testing.T) {
 	RegisterTestingT(t)
 
 	tmp := t.TempDir()
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		stack, input := newPagesInput("mysite", &cfApi.PagesConfig{
-			AuthConfig: cfApi.AuthConfig{
-				Credentials: api.Credentials{Credentials: "t"},
-				AccountId:   "acct",
-			},
-			BundleDir: tmp,
-			Domain:    "www.example.com",
-		})
+		cfg := baseInput(tmp)
+		cfg.Site.Domain = "www.example.com"
+		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{Log: logger.New()})
 		return err
 	}, sdk.WithMocks("test-project", "test-stack", &pagesMocks{}))

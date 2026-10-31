@@ -13,7 +13,15 @@ func init() {
 	api.RegisterProviderConfig(api.ConfigRegisterMap{
 		// cloudflare
 		RegistrarType:                       ReadRegistrarConfig,
-		TemplateTypeCloudflareStaticWebsite: ReadPagesConfig,
+		TemplateTypeCloudflareStaticWebsite: ReadTemplateConfig,
+	})
+
+	// Client-side converter: a `type: static` client stack whose parent
+	// template resolves to `cloudflare-static-website` gets its merged
+	// *PagesInput built here. Mirrors sc-plugin-aws's ToStaticSiteConfig
+	// registration.
+	api.RegisterCloudStaticSiteConverter(api.CloudStaticSiteConfigRegister{
+		TemplateTypeCloudflareStaticWebsite: ToPagesConfig,
 	})
 
 	// Fool-protection: when SC core has dropped the in-tree cloudflare
