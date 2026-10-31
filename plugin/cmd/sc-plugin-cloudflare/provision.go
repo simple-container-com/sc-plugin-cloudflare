@@ -132,7 +132,42 @@ func decodeTypedConfig(resourceType string, inputs map[string]*scpluginv1.InputV
 		// SC-core sends is the serialised *PagesInput. Decode into
 		// that same shape so the driver's type assertion lands.
 		cfg := &cfApi.PagesInput{}
-		return cfg, decodeInputsAs(inputs, cfg)
+		if err := decodeInputsAs(inputs, cfg); err != nil {
+			return nil, err
+		}
+		// Patch the inline-decode gap. StackConfigStatic.Site is a
+		// NAMED yaml:",inline" field, which Go's encoding/json ignores
+		// — SC core serialises `"Site": {...}` nested, and yaml.v3's
+		// inline decode drops the Site subtree silently. Rescue the
+		// four fields the Pages driver reads by walking the raw
+		// `inputs["Site"]` map directly, independent of
+		// StackConfigStatic's own decode path. Works whether or not
+		// SC core's ToPagesConfig also populated the flat mirrors —
+		// SC core releases that pre-date the mirrors leave them
+		// empty, so the plugin recovers Site.* here on its own.
+		if siteIV, ok := inputs["Site"]; ok {
+			if site := siteIV.GetMapValue(); site != nil {
+				take := func(k string) string {
+					if iv := site.GetFields()[k]; iv != nil {
+						return iv.GetStringValue()
+					}
+					return ""
+				}
+				if cfg.Domain == "" {
+					cfg.Domain = take("domain")
+				}
+				if cfg.BaseDnsZone == "" {
+					cfg.BaseDnsZone = take("baseDnsZone")
+				}
+				if cfg.IndexDocument == "" {
+					cfg.IndexDocument = take("indexDocument")
+				}
+				if cfg.ErrorDocument == "" {
+					cfg.ErrorDocument = take("errorDocument")
+				}
+			}
+		}
+		return cfg, nil
 	default:
 		return nil, errors.Errorf("sc-plugin-cloudflare has no config decoder for %q", resourceType)
 	}
