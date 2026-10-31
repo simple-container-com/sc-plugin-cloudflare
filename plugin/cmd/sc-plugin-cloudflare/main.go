@@ -72,6 +72,17 @@ func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.Re
 		MonitorAddr: h.GetMonitorAddress(),
 		Project:     h.GetProjectName(),
 		Stack:       h.GetStackName(),
+		// DryRun landed on RequestHeader via api v2026.10.60 (api#527).
+		// Without this the plugin's pctx thinks DryRun() is always false,
+		// which broke the Pages uploader's `if ctx.DryRun()` guard at
+		// plugin/internal/pages.go:94 — uploader fired at preview against
+		// a PagesProject that only existed in the plan, hung 30 min on
+		// upload-token until the GH Actions runner killed the job
+		// (navizon-landing run 41225424219, 2026-10-31). Threading
+		// h.GetDryRun() here makes the guard actually work. Zero-value
+		// false on older SC cores matches pre-field behaviour so this
+		// change is transparent against pre-10.60 cores.
+		DryRun: h.GetDryRun(),
 	})
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "open pulumi context from monitor address")
