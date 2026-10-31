@@ -78,16 +78,24 @@ type PagesInput struct {
 	// created without a `domain:` binding, old aws CNAME deleted, no
 	// new CNAME, navizon.atriumdev.app public DNS broke until this
 	// field was wired. Fix is pragmatic rather than fundamental:
-	// expose the three Site.* fields the Pages driver reads at the
+	// expose the four Site.* fields the Pages driver reads at the
 	// top of PagesInput, populate from stackCfg.Site in
-	// ToPagesConfig, and read these in StaticWebsite with a
-	// stackCfg.Site.* fallback for callers who build PagesInput by
-	// hand. A proper fix lives in the api repo — flatten the
-	// Site inline round-trip; see 04 §V.
-	Domain        string `json:"domain,omitempty"        yaml:"domain,omitempty"`
-	BaseDnsZone   string `json:"baseDnsZone,omitempty"   yaml:"baseDnsZone,omitempty"`
-	IndexDocument string `json:"indexDocument,omitempty" yaml:"indexDocument,omitempty"`
-	ErrorDocument string `json:"errorDocument,omitempty" yaml:"errorDocument,omitempty"`
+	// ToPagesConfig, read via EffectiveDomain() / OverriddenBaseZone()
+	// with a Site.* fallback. A proper fix lives in the api repo —
+	// flatten the Site inline round-trip; see 04 §V.
+	//
+	// The yaml keys MUST NOT collide with the inlined Site.* keys —
+	// yaml.v3 is strict about duplicate keys, so a parse with both
+	// `domain:` (top-level Domain here) AND `Site: {domain: ...}`
+	// (from the inline) panics `duplicated key 'domain'`. Prefix the
+	// mirror keys with `_pages_` so the inline Site keys own the
+	// "natural" names and the mirrors live beside them without
+	// collision. Clients NEVER author these fields — they are only
+	// populated by ToPagesConfig and serialised onto the plugin bus.
+	Domain        string `json:"pagesDomain,omitempty"        yaml:"_pages_domain,omitempty"`
+	BaseDnsZone   string `json:"pagesBaseDnsZone,omitempty"   yaml:"_pages_baseDnsZone,omitempty"`
+	IndexDocument string `json:"pagesIndexDocument,omitempty" yaml:"_pages_indexDocument,omitempty"`
+	ErrorDocument string `json:"pagesErrorDocument,omitempty" yaml:"_pages_errorDocument,omitempty"`
 }
 
 // OverriddenBaseZone implements api.DnsConfigAware so the Cloudflare registrar
