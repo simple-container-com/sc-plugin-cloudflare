@@ -28,10 +28,10 @@ import (
 //     wrangler's five-call flow (upload-token → check-missing → upload →
 //     upsert-hashes → create-deployment) directly in Go. No wrangler, no
 //     node, no local shell-out. See uploader.go for the API reference.
-//  3. cfImpl.NewPagesDomain — custom-domain binding (only if cfg.Site.Domain
+//  3. cfImpl.NewPagesDomain — custom-domain binding (only if cfg.EffectiveDomain()
 //     is set).
 //  4. params.Registrar.NewRecord — CNAME `<domain>` → `<project>.pages.dev`,
-//     proxied through Cloudflare (only if cfg.Site.Domain is set).
+//     proxied through Cloudflare (only if cfg.EffectiveDomain() is set).
 //
 // The upload is NOT a Pulumi resource — ApplyT runs during Apply (not
 // Preview), so a `pulumi preview` lists only the three real resources
@@ -131,7 +131,7 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	// No domain → serve on <project>.pages.dev only. Still gate on the
 	// deployment Output so a preview chain of this with downstream
 	// consumers works.
-	if cfg.Site.Domain == "" {
+	if cfg.EffectiveDomain() == "" {
 		params.Log.Info(ctx.Context(),
 			"cloudflare pages project %q has no `domain:` set; site will serve at %s.pages.dev",
 			projectName, projectName)
@@ -139,32 +139,32 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 	}
 
 	// Custom-domain binding + Registrar CNAME.
-	params.Log.Info(ctx.Context(), "configure cloudflare pages custom domain %q...", cfg.Site.Domain)
+	params.Log.Info(ctx.Context(), "configure cloudflare pages custom domain %q...", cfg.EffectiveDomain())
 	_, err = cfImpl.NewPagesDomain(ctx, fmt.Sprintf("%s-domain", stack.Name), &cfImpl.PagesDomainArgs{
 		AccountId:   sdk.String(cfg.AccountId),
 		ProjectName: project.Name,
-		Name:        sdk.String(cfg.Site.Domain),
+		Name:        sdk.String(cfg.EffectiveDomain()),
 	}, sdk.Provider(provider), sdk.DependsOn([]sdk.Resource{project}))
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to attach cloudflare pages domain %q to project %q", cfg.Site.Domain, projectName)
+		return nil, errors.Wrapf(err, "failed to attach cloudflare pages domain %q to project %q", cfg.EffectiveDomain(), projectName)
 	}
 
 	if params.Registrar == nil {
 		return nil, errors.Errorf(
 			"cloudflare-static-website %q sets `domain: %s` but no registrar is configured on this stack — "+
 				"add a `resources.registrars.cloudflare` entry on the parent so SC can create the CNAME",
-			stack.Name, cfg.Site.Domain,
+			stack.Name, cfg.EffectiveDomain(),
 		)
 	}
 	cnameTarget := fmt.Sprintf("%s.pages.dev", projectName)
 	_, err = params.Registrar.NewRecord(ctx, api.DnsRecord{
-		Name:     cfg.Site.Domain,
+		Name:     cfg.EffectiveDomain(),
 		Type:     "CNAME",
 		ValueOut: sdk.String(cnameTarget).ToStringOutput(),
 		Proxied:  true,
 	})
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to provision CNAME %q → %q", cfg.Site.Domain, cnameTarget)
+		return nil, errors.Wrapf(err, "failed to provision CNAME %q → %q", cfg.EffectiveDomain(), cnameTarget)
 	}
 
 	return &api.ResourceOutput{Ref: deployment}, nil
