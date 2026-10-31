@@ -4,42 +4,42 @@
 package cloudflare
 
 import (
-	"crypto/md5"
-	"encoding/hex"
+	"context"
 	"fmt"
 	"path/filepath"
 
-	"github.com/MShekow/directory-checksum/directory_checksum"
 	"github.com/pkg/errors"
 	cfImpl "github.com/pulumi/pulumi-cloudflare/sdk/v6/go/cloudflare"
-	"github.com/pulumi/pulumi-command/sdk/go/command/local"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/simple-container-com/api/pkg/api"
+	"github.com/simple-container-com/api/pkg/api/logger"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
-	"github.com/spf13/afero"
 
 	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 )
 
 // StaticWebsite is the driver for `template: cloudflare-static-website`.
 //
-// Four resources, in order:
+// Three resources + one in-plugin REST upload, in order:
 //
 //  1. cfImpl.NewPagesProject — Direct Upload mode (nil Source). pulumi-cloudflare
-//     v6.17.0 has no NewPagesDeployment resource, so the deployment itself
-//     happens via wrangler in #2.
-//  2. local.NewCommand running `wrangler pages deploy <bundleDir>` with the
-//     Cloudflare token + account id passed via env. Triggers on the md5 of the
-//     bundleDir's recursive content checksum, so a deploy with no file changes
-//     is a Pulumi no-op.
-//  3. cfImpl.NewPagesDomain — the custom-domain binding (only if cfg.Site.Domain
+//     v6.17.0 has no NewPagesDeployment resource; we upload the bundle below.
+//  2. project.Name.ApplyT(...) — calls `uploader.uploadBundle` which does
+//     wrangler's five-call flow (upload-token → check-missing → upload →
+//     upsert-hashes → create-deployment) directly in Go. No wrangler, no
+//     node, no local shell-out. See uploader.go for the API reference.
+//  3. cfImpl.NewPagesDomain — custom-domain binding (only if cfg.Site.Domain
 //     is set).
 //  4. params.Registrar.NewRecord — CNAME `<domain>` → `<project>.pages.dev`,
 //     proxied through Cloudflare (only if cfg.Site.Domain is set).
 //
-// Mirrors sc-plugin-aws/plugin/internal/static_website.go on purpose — the
-// drivers are isomorphic (bucket+policy ↔ project ; sync-command ↔ wrangler
-// deploy ; registrar CNAME ↔ registrar CNAME).
+// The upload is NOT a Pulumi resource — ApplyT runs during Apply (not
+// Preview), so a `pulumi preview` lists only the three real resources
+// and skips the network call. On Apply, Cloudflare retains every
+// deployment and the custom-domain binding always points at the latest
+// production deployment, so repeated applies with unchanged content are
+// cheap (check-missing short-circuits) and idempotent on the user-visible
+// side even without Pulumi state tracking the upload.
 func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, params pApi.ProvisionParams) (*api.ResourceOutput, error) {
 	if input.Descriptor.Type != cfApi.TemplateTypeCloudflareStaticWebsite {
 		return nil, errors.Errorf("unsupported template type %q", input.Descriptor.Type)
@@ -64,8 +64,8 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		productionBranch = "main"
 	}
 
-	// Build the project. Nil Source → direct-upload mode; Pulumi creates the
-	// Pages project itself, and wrangler publishes deployments against it.
+	// Build the project. Nil Source → direct-upload mode; Pulumi creates
+	// the Pages project itself, and the uploader below publishes against it.
 	projectName := stack.Name
 	params.Log.Info(ctx.Context(), "configure cloudflare pages project %q...", projectName)
 	project, err := cfImpl.NewPagesProject(ctx, fmt.Sprintf("%s-pages", stack.Name), &cfImpl.PagesProjectArgs{
@@ -77,45 +77,35 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		return nil, errors.Wrapf(err, "failed to create cloudflare pages project %q", projectName)
 	}
 
-	// Checksum the bundle so Triggers fire only on real content changes.
-	dir, err := directory_checksum.ScanDirectory(bundleDir, afero.NewOsFs())
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to scan bundleDir %q", bundleDir)
-	}
-	checksums, err := dir.ComputeDirectoryChecksums()
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to compute checksum of bundleDir %q", bundleDir)
-	}
-	sum := md5.Sum([]byte(checksums))
-	bundleChecksum := hex.EncodeToString(sum[:])
-	params.Log.Info(ctx.Context(), "cloudflare pages bundleDir %q checksum: %s", bundleDir, bundleChecksum)
+	// Deploy the bundle inside an ApplyT so (a) the project name is
+	// resolved from the Create's response and (b) the network call only
+	// fires at Apply, not Preview. We attach the upload result as an
+	// Output so it participates in the resource graph for logging.
+	deployment := project.Name.ApplyT(func(name string) (string, error) {
+		uploader := newPagesUploader(cfg.Credentials.Credentials, cfg.AccountId)
+		res, uerr := uploader.uploadBundle(
+			ctx.Context(),
+			name,
+			bundleDir,
+			productionBranch,
+			"", // commit message — SC doesn't thread one through yet
+			"", // commit hash — same
+			&pagesUploadLogger{inner: params.Log},
+		)
+		if uerr != nil {
+			return "", uerr
+		}
+		return res.ID, nil
+	}).(sdk.StringOutput)
 
-	// wrangler is the uploader. Credentials passed via env, not interpolated
-	// into the command string, so they do not land in Pulumi state or in
-	// `pulumi preview --json`.
-	deployCmd := sdk.Sprintf(
-		"wrangler pages deploy %s --project-name=%s --branch=%s --commit-dirty=true",
-		bundleDir, projectName, productionBranch,
-	)
-	_, err = local.NewCommand(ctx, fmt.Sprintf("%s-deploy", stack.Name), &local.CommandArgs{
-		Create:   deployCmd,
-		Update:   deployCmd,
-		Triggers: sdk.ArrayInput(sdk.Array{sdk.String(bundleChecksum)}),
-		Environment: sdk.StringMap{
-			"CLOUDFLARE_API_TOKEN":  sdk.ToSecret(cfg.Credentials.Credentials).(sdk.StringOutput),
-			"CLOUDFLARE_ACCOUNT_ID": sdk.String(cfg.AccountId),
-		},
-	}, sdk.DependsOn([]sdk.Resource{project}))
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to invoke wrangler pages deploy for %q", stack.Name)
-	}
-
-	// No domain → serve on <project>.pages.dev only.
+	// No domain → serve on <project>.pages.dev only. Still gate on the
+	// deployment Output so a preview chain of this with downstream
+	// consumers works.
 	if cfg.Site.Domain == "" {
 		params.Log.Info(ctx.Context(),
 			"cloudflare pages project %q has no `domain:` set; site will serve at %s.pages.dev",
 			projectName, projectName)
-		return &api.ResourceOutput{Ref: project}, nil
+		return &api.ResourceOutput{Ref: deployment}, nil
 	}
 
 	// Custom-domain binding + Registrar CNAME.
@@ -147,5 +137,15 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		return nil, errors.Wrapf(err, "failed to provision CNAME %q → %q", cfg.Site.Domain, cnameTarget)
 	}
 
-	return &api.ResourceOutput{Ref: project}, nil
+	return &api.ResourceOutput{Ref: deployment}, nil
+}
+
+// pagesUploadLogger adapts pApi.Logger to the uploader's slim interface.
+// Keeps the uploader free of the SC-core logger import for easier testing.
+type pagesUploadLogger struct {
+	inner logger.Logger
+}
+
+func (p *pagesUploadLogger) Info(ctx context.Context, msg string, args ...any) {
+	p.inner.Info(ctx, msg, args...)
 }

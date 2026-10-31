@@ -3,19 +3,17 @@ module github.com/simple-container-com/sc-plugin-cloudflare/plugin
 go 1.26.10
 
 require (
-	github.com/MShekow/directory-checksum v1.4.20
 	github.com/cloudflare/cloudflare-go v0.117.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/onsi/gomega v1.44.0
 	github.com/pkg/errors v0.9.1
 	github.com/pulumi/pulumi-cloudflare/sdk/v6 v6.17.0
-	github.com/pulumi/pulumi-command/sdk v1.2.1
 	github.com/pulumi/pulumi/sdk/v3 v3.245.0
 	github.com/samber/lo v1.53.0
 	github.com/simple-container-com/api v0.0.0-20261030194634-b1b0758d8e83
 	github.com/simple-container-com/sc-plugin-cloudflare/api v0.0.0-20261026175043-5eddde358585
-	github.com/spf13/afero v1.15.0
 	gopkg.in/yaml.v3 v3.0.1
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -53,7 +51,6 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.9.0 // indirect
 	github.com/go-git/go-git/v5 v5.19.2 // indirect

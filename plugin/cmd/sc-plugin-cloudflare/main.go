@@ -54,10 +54,12 @@ func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpl
 		ResourceTypes:  []string{cfApi.TemplateTypeCloudflareStaticWebsite},
 		PulumiPlugins: []*scpluginv1.PulumiPluginRequirement{
 			{Package: "cloudflare", Version: "6.17.0"},
-			// pulumi-command is used by cloudflare-static-website's wrangler
-			// pages deploy local.NewCommand step. Pin matches sc-plugin-aws's
-			// pin for the aws-static-website `aws s3 sync` step.
-			{Package: "command", Version: "1.2.1"},
+			// No pulumi-command: cloudflare-static-website uploads the
+			// bundle via an in-plugin REST client (uploader.go) rather
+			// than shelling out to wrangler. The deploy image needs no
+			// node/npm/wrangler as a result — see
+			// forge/docs/design/2026-10-31/cloudflare-pages-direct-upload/
+			// and workflow #41181349116's wrangler-not-in-image constraint.
 		},
 	}, nil
 }

@@ -4,6 +4,11 @@
 package cloudflare
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -18,9 +23,10 @@ import (
 	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 )
 
-// URN contract for cloudflare-static-website. The driver produces four
-// resources whose names derive from stack.Name; a future rename would
-// replace+destroy every live Pages project on upgrade.
+// URN contract for cloudflare-static-website. The driver produces two
+// Pulumi resources (PagesProject + optional PagesDomain) and runs an
+// in-plugin REST upload inside an ApplyT. These tests pin both the
+// URN names and the shape of the REST calls against a mock CF server.
 
 type pagesMocks struct {
 	mu       sync.Mutex
@@ -104,19 +110,108 @@ func baseInput(bundleDir string) *cfApi.PagesInput {
 	}
 }
 
-// TestPages_URNContract_NoDomain — a stack without `domain:` produces
-// exactly a PagesProject and a local Command, no PagesDomain and no DNS
-// record. Project name is `<stack>-pages`; deploy command name is
-// `<stack>-deploy`.
+// fakeCFServer is a minimal httptest.Server that implements the four
+// Pages Direct Upload endpoints + the deployment-creation POST. Captures
+// every request so tests can assert the plugin called them in order.
+type fakeCFServer struct {
+	srv            *httptest.Server
+	mu             sync.Mutex
+	tokenRequests  int
+	missingHashes  []string
+	uploadedHashes []string
+	upsertedHashes []string
+	deploymentPOST bool
+	manifest       map[string]string
+}
+
+func newFakeCFServer(t *testing.T) *fakeCFServer {
+	t.Helper()
+	f := &fakeCFServer{manifest: map[string]string{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && filepath.Base(r.URL.Path) == "upload-token":
+			f.tokenRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]string{"jwt": "fake-jwt"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/pages/assets/check-missing":
+			var body struct {
+				Hashes []string `json:"hashes"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			// Pretend none exist yet — all hashes are missing.
+			f.missingHashes = append(f.missingHashes, body.Hashes...)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  body.Hashes,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/pages/assets/upload":
+			var payloads []uploadPayload
+			_ = json.NewDecoder(r.Body).Decode(&payloads)
+			for _, p := range payloads {
+				f.uploadedHashes = append(f.uploadedHashes, p.Key)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": nil})
+		case r.Method == http.MethodPost && r.URL.Path == "/pages/assets/upsert-hashes":
+			var body struct {
+				Hashes []string `json:"hashes"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.upsertedHashes = append(f.upsertedHashes, body.Hashes...)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": nil})
+		case r.Method == http.MethodPost && filepath.Base(r.URL.Path) == "deployments":
+			f.deploymentPOST = true
+			_ = r.ParseMultipartForm(16 << 20)
+			manifestField := r.PostForm.Get("manifest")
+			if manifestField == "" && r.MultipartForm != nil {
+				if v := r.MultipartForm.Value["manifest"]; len(v) > 0 {
+					manifestField = v[0]
+				}
+			}
+			_ = json.Unmarshal([]byte(manifestField), &f.manifest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]string{"id": "dep-123", "url": "https://mysite.pages.dev"},
+			})
+		default:
+			t.Logf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Setenv("SC_CLOUDFLARE_API_BASE", f.srv.URL)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// bundleWithOneFile creates a temp bundle directory with a single
+// `index.html` so the uploader has something to hash + upload.
+func bundleWithOneFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>hi</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestPages_URNContract_NoDomain — a stack without `domain:` registers
+// only a PagesProject named `<stack>-pages`. The REST uploader is
+// still called at Apply (one file, one upload, one deployment POST).
 func TestPages_URNContract_NoDomain(t *testing.T) {
 	RegisterTestingT(t)
 
-	tmp := t.TempDir()
+	fake := newFakeCFServer(t)
+	bundle := bundleWithOneFile(t)
 
 	m := &pagesMocks{}
 	reg := &capturingRegistrar{}
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		cfg := baseInput(tmp)
+		cfg := baseInput(bundle)
 		cfg.ProductionBranch = "main"
 		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{
@@ -129,12 +224,16 @@ func TestPages_URNContract_NoDomain(t *testing.T) {
 
 	Expect(m.namesByType("cloudflare:index/pagesProject:PagesProject")).To(Equal([]string{"mysite-pages"}),
 		"PagesProject name is `<stack>-pages`. Changing invalidates existing state.")
-	Expect(m.namesByType("command:local:Command")).To(Equal([]string{"mysite-deploy"}),
-		"wrangler deploy command is `<stack>-deploy`. Changing invalidates existing state.")
 	Expect(m.namesByType("cloudflare:index/pagesDomain:PagesDomain")).To(BeEmpty(),
 		"PagesDomain must not be created when `domain:` is unset")
 	Expect(reg.records).To(BeEmpty(),
 		"no registrar record when `domain:` is unset")
+
+	// Upload flow fired end-to-end.
+	Expect(fake.tokenRequests).To(Equal(1), "upload-token GET must fire exactly once per deploy")
+	Expect(fake.uploadedHashes).To(HaveLen(1), "one file in bundle → one hash uploaded")
+	Expect(fake.deploymentPOST).To(BeTrue(), "deployments POST must fire after upload")
+	Expect(fake.manifest).To(HaveKey("/index.html"), "manifest keys must be forward-slash-prefixed paths")
 }
 
 // TestPages_URNContract_WithDomain — a stack with `domain:` adds a
@@ -143,12 +242,13 @@ func TestPages_URNContract_NoDomain(t *testing.T) {
 func TestPages_URNContract_WithDomain(t *testing.T) {
 	RegisterTestingT(t)
 
-	tmp := t.TempDir()
+	newFakeCFServer(t)
+	bundle := bundleWithOneFile(t)
 
 	m := &pagesMocks{}
 	reg := &capturingRegistrar{}
 	err := sdk.RunErr(func(ctx *sdk.Context) error {
-		cfg := baseInput(tmp)
+		cfg := baseInput(bundle)
 		cfg.Site.Domain = "www.example.com"
 		stack, input := newPagesInput("mysite", cfg)
 		_, err := StaticWebsite(ctx, stack, input, pApi.ProvisionParams{
@@ -160,7 +260,6 @@ func TestPages_URNContract_WithDomain(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred())
 
 	Expect(m.namesByType("cloudflare:index/pagesProject:PagesProject")).To(Equal([]string{"mysite-pages"}))
-	Expect(m.namesByType("command:local:Command")).To(Equal([]string{"mysite-deploy"}))
 	Expect(m.namesByType("cloudflare:index/pagesDomain:PagesDomain")).To(Equal([]string{"mysite-domain"}),
 		"PagesDomain name is `<stack>-domain`. Changing invalidates existing state.")
 
