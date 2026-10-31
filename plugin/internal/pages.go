@@ -64,6 +64,24 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		productionBranch = "main"
 	}
 
+	// Build a cloudflare provider from the stack's own API token BEFORE
+	// creating any Pages resource. Without an explicit `sdk.Provider(...)`,
+	// `cfImpl.NewPagesProject` falls through to Pulumi's default
+	// `pulumi:providers:cloudflare::default_6_17_0` which has no credentials
+	// configured, and the Cloudflare API answers:
+	//   400 Bad Request: {"code":9106,"message":"Missing X-Auth-Key,
+	//   X-Auth-Email or Authorization headers"}
+	// Live-caught on navizon-landing deploy run 41244391104 (2026-10-31)
+	// — the apply reached PagesProject create cleanly, hit this, errored.
+	// Mirrors the registrar's own provider construction in registrar.go.
+	params.Log.Info(ctx.Context(), "configure cloudflare provider for stack %q (account %q)...", stack.Name, cfg.AccountId)
+	provider, err := cfImpl.NewProvider(ctx, fmt.Sprintf("%s-pages-provider", stack.Name), &cfImpl.ProviderArgs{
+		ApiToken: sdk.StringPtr(cfg.Credentials.Credentials),
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to init cloudflare provider for pages %q", stack.Name)
+	}
+
 	// Build the project. Nil Source → direct-upload mode; Pulumi creates
 	// the Pages project itself, and the uploader below publishes against it.
 	projectName := stack.Name
@@ -72,7 +90,7 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		AccountId:        sdk.String(cfg.AccountId),
 		Name:             sdk.String(projectName),
 		ProductionBranch: sdk.String(productionBranch),
-	})
+	}, sdk.Provider(provider))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create cloudflare pages project %q", projectName)
 	}
@@ -126,7 +144,7 @@ func StaticWebsite(ctx *sdk.Context, stack api.Stack, input api.ResourceInput, p
 		AccountId:   sdk.String(cfg.AccountId),
 		ProjectName: project.Name,
 		Name:        sdk.String(cfg.Site.Domain),
-	}, sdk.DependsOn([]sdk.Resource{project}))
+	}, sdk.Provider(provider), sdk.DependsOn([]sdk.Resource{project}))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to attach cloudflare pages domain %q to project %q", cfg.Site.Domain, projectName)
 	}
