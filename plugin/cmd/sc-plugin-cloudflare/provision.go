@@ -16,6 +16,7 @@ import (
 	"github.com/simple-container-com/api/pkg/api"
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
 	scpluginv1 "github.com/simple-container-com/api/pkg/plugin/proto/v1"
+	"github.com/simple-container-com/api/pkg/plugin/runtime"
 
 	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 	cfInternal "github.com/simple-container-com/sc-plugin-cloudflare/plugin/internal"
@@ -50,15 +51,11 @@ func (p *cfPlugin) Provision(ctx context.Context, req *scpluginv1.ProvisionReque
 		return nil, errors.Errorf("sc-plugin-cloudflare does not know how to provision %q", req.GetResourceType())
 	}
 
-	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	rctx, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	// DO NOT close pctx here. See the aws plugin's identical note at
-	// sc-plugin-aws/plugin/cmd/sc-plugin-aws/main.go:222 — closing the
-	// context before every ApplyT the driver scheduled has drained can
-	// take background goroutines down with it. The pctx is cheap to leak
-	// until plugin shutdown — one TCP connection to SC core's monitor.
+	defer runtime.Settle(rctx, &resp, &err)
 	p.progress.Info("provision", fmt.Sprintf("provisioning %s %q", req.GetResourceType(), req.GetResourceName()))
 
 	cfg, err := decodeTypedConfig(req.GetResourceType(), req.GetInputs())
@@ -107,14 +104,10 @@ func (p *cfPlugin) Provision(ctx context.Context, req *scpluginv1.ProvisionReque
 	params.Registrar = p.registrar
 	p.mu.Unlock()
 
-	out, err := fn(pctx, api.Stack{Name: cliStackName}, input, params)
+	out, err := fn(rctx.Pulumi, api.Stack{Name: cliStackName}, input, params)
 	if err != nil {
 		p.progress.Error("provision", err.Error())
 		return nil, err
-	}
-	if werr := drainContext(pctx); werr != nil {
-		p.progress.Error("provision", "drain: "+werr.Error())
-		return nil, werr
 	}
 	urn := waitForRef(out.Ref)
 	p.progress.Info("provision", fmt.Sprintf("%s %q registered (urn=%s)", req.GetResourceType(), req.GetResourceName(), urn))
