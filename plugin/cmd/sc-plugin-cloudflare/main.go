@@ -25,6 +25,7 @@ import (
 	pApi "github.com/simple-container-com/api/pkg/clouds/pulumi/api"
 	scPlugin "github.com/simple-container-com/api/pkg/plugin"
 	scpluginv1 "github.com/simple-container-com/api/pkg/plugin/proto/v1"
+	"github.com/simple-container-com/api/pkg/plugin/runtime"
 
 	cfApi "github.com/simple-container-com/sc-plugin-cloudflare/api"
 	cfInternal "github.com/simple-container-com/sc-plugin-cloudflare/plugin/internal"
@@ -64,33 +65,17 @@ func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpl
 	}, nil
 }
 
-func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.RequestHeader) (*sdk.Context, func(), error) {
-	if h.GetMonitorAddress() == "" {
-		return nil, nil, errors.New("no monitor address in request header")
-	}
-	pctx, err := sdk.NewContext(ctx, sdk.RunInfo{
-		MonitorAddr: h.GetMonitorAddress(),
-		Project:     h.GetProjectName(),
-		Stack:       h.GetStackName(),
-		// DryRun landed on RequestHeader via api v2026.10.60 (api#527).
-		// Without this the plugin's pctx thinks DryRun() is always false,
-		// which broke the Pages uploader's `if ctx.DryRun()` guard at
-		// plugin/internal/pages.go:94 — uploader fired at preview against
-		// a PagesProject that only existed in the plan, hung 30 min on
-		// upload-token until the GH Actions runner killed the job
-		// (navizon-landing run 41225424219, 2026-10-31). Threading
-		// h.GetDryRun() here makes the guard actually work. Zero-value
-		// false on older SC cores matches pre-field behaviour so this
-		// change is transparent against pre-10.60 cores.
-		DryRun: h.GetDryRun(),
-	})
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "open pulumi context from monitor address")
-	}
-	return pctx, func() { pctx.Close() }, nil
+// pulumiContextFromHeader opens the handler's Pulumi context via the shared
+// api/pkg/plugin/runtime library (drain + local-engine fallback moved
+// there). WithLocalEngineFallback is required so the Pages uploader's
+// `if ctx.DryRun()` guard at plugin/internal/pages.go:94 keeps firing
+// correctly — runtime.NewContext reads header.GetDryRun() and threads it
+// into sdk.RunInfo.DryRun.
+func (p *cfPlugin) pulumiContextFromHeader(ctx context.Context, h *scpluginv1.RequestHeader) (*runtime.Context, error) {
+	return runtime.NewContext(ctx, h, runtime.WithLocalEngineFallback(p.progress))
 }
 
-func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.ProvisionRegistrarRequest) (*scpluginv1.ProvisionRegistrarResponse, error) {
+func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.ProvisionRegistrarRequest) (resp *scpluginv1.ProvisionRegistrarResponse, err error) {
 	// Say which zone is the CONFIGURED DEFAULT and which the stack asked for,
 	// because this line is emitted before the zone is resolved and in
 	// isolation it reads like the final answer. On the fleet the configured
@@ -107,18 +92,11 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 		initZone += ", stack states no preference"
 	}
 	p.progress.Info("provision-registrar", "initialising cloudflare registrar; zone "+initZone)
-	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	rctx, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	// DO NOT close pctx on return. Closing it cuts off any in-flight
-	// RegisterResource RPCs, which drops the plugin's URN registrations
-	// and plans a destroy of every pre-existing state entry — the exact
-	// cascade pattern Addendum U/V of
-	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
-	// documents. Mongodb hit this and lost the fleet's shared Atlas
-	// project on 2026-10-31T11:07. Every RPC handler in every plugin
-	// leaks the pctx until plugin shutdown.
+	defer runtime.Settle(rctx, &resp, &err)
 
 	cfg := inputsToRegistrarConfig(req.GetConfig())
 	desc := api.RegistrarDescriptor{
@@ -145,7 +123,7 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	// went to the plugin subprocess's stdout and never reached the operator —
 	// zero of them appear in forge-notifier run 40654637631. See
 	// progresslog.go for why, and for the phase-coverage trap it closes.
-	r, err := cfInternal.Registrar(pctx, desc, pApi.ProvisionParams{
+	r, err := cfInternal.Registrar(rctx.Pulumi, desc, pApi.ProvisionParams{
 		Log:           newProgressLogger(p.progress, "registrar"),
 		DnsPreference: pref,
 	})
@@ -168,19 +146,12 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 	return &scpluginv1.ProvisionRegistrarResponse{MainDomain: r.MainDomain()}, nil
 }
 
-func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecordRequest) (*scpluginv1.NewDnsRecordResponse, error) {
-	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecordRequest) (resp *scpluginv1.NewDnsRecordResponse, err error) {
+	rctx, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	// DO NOT close pctx on return. Closing it cuts off any in-flight
-	// RegisterResource RPCs, which drops the plugin's URN registrations
-	// and plans a destroy of every pre-existing state entry — the exact
-	// cascade pattern Addendum U/V of
-	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
-	// documents. Mongodb hit this and lost the fleet's shared Atlas
-	// project on 2026-10-31T11:07. Every RPC handler in every plugin
-	// leaks the pctx until plugin shutdown.
+	defer runtime.Settle(rctx, &resp, &err)
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
@@ -188,7 +159,7 @@ func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecor
 		return nil, errors.New("NewDnsRecord called before ProvisionRegistrar")
 	}
 	p.progress.Info("dns-record", fmt.Sprintf("creating %s record %q → %q", req.GetRecordType(), req.GetRecordName(), req.GetValueResolved()))
-	out, err := r.NewRecord(pctx, api.DnsRecord{
+	out, err := r.NewRecord(rctx.Pulumi, api.DnsRecord{
 		Name:    req.GetRecordName(),
 		Type:    req.GetRecordType(),
 		Value:   req.GetValueResolved(),
@@ -254,19 +225,12 @@ func waitForRef(ref any) string {
 	}
 }
 
-func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.NewOverrideHeaderRuleRequest) (*scpluginv1.NewOverrideHeaderRuleResponse, error) {
-	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.NewOverrideHeaderRuleRequest) (resp *scpluginv1.NewOverrideHeaderRuleResponse, err error) {
+	rctx, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	// DO NOT close pctx on return. Closing it cuts off any in-flight
-	// RegisterResource RPCs, which drops the plugin's URN registrations
-	// and plans a destroy of every pre-existing state entry — the exact
-	// cascade pattern Addendum U/V of
-	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
-	// documents. Mongodb hit this and lost the fleet's shared Atlas
-	// project on 2026-10-31T11:07. Every RPC handler in every plugin
-	// leaks the pctx until plugin shutdown.
+	defer runtime.Settle(rctx, &resp, &err)
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
@@ -286,7 +250,7 @@ func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.Ne
 		rule.OverridePages = &pApi.OverridePagesRule{IndexPage: op.GetIndexPage(), NotFoundPage: op.GetNotFoundPage()}
 	}
 	p.progress.Info("worker-route", fmt.Sprintf("overriding host %q → %q (rule %q)", rule.FromHost, req.GetToHostResolved(), rule.Name))
-	out, err := r.NewOverrideHeaderRule(pctx, api.Stack{Name: req.GetStackName()}, rule)
+	out, err := r.NewOverrideHeaderRule(rctx.Pulumi, api.Stack{Name: req.GetStackName()}, rule)
 	if err != nil {
 		p.progress.Error("worker-route", fmt.Sprintf("rule %q failed: %v", rule.Name, err))
 		return nil, err
@@ -296,19 +260,12 @@ func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.Ne
 	return &scpluginv1.NewOverrideHeaderRuleResponse{Urn: urn}, nil
 }
 
-func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scpluginv1.ProvisionDomainForEndpointRequest) (*scpluginv1.ProvisionDomainForEndpointResponse, error) {
-	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scpluginv1.ProvisionDomainForEndpointRequest) (resp *scpluginv1.ProvisionDomainForEndpointResponse, err error) {
+	rctx, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	// DO NOT close pctx on return. Closing it cuts off any in-flight
-	// RegisterResource RPCs, which drops the plugin's URN registrations
-	// and plans a destroy of every pre-existing state entry — the exact
-	// cascade pattern Addendum U/V of
-	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
-	// documents. Mongodb hit this and lost the fleet's shared Atlas
-	// project on 2026-10-31T11:07. Every RPC handler in every plugin
-	// leaks the pctx until plugin shutdown.
+	defer runtime.Settle(rctx, &resp, &err)
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
@@ -322,7 +279,7 @@ func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scplugin
 		WebSocket:  req.GetWebsocket(),
 	}
 	p.progress.Info("endpoint", fmt.Sprintf("provisioning domain %q for endpoint %q (target %q)", endpoint.Domain, endpoint.Name, req.GetTargetHostResolved()))
-	out, err := r.ProvisionDomainForEndpoint(pctx, api.Stack{Name: req.GetStackName()}, endpoint)
+	out, err := r.ProvisionDomainForEndpoint(rctx.Pulumi, api.Stack{Name: req.GetStackName()}, endpoint)
 	if err != nil {
 		p.progress.Error("endpoint", fmt.Sprintf("endpoint %q failed: %v", endpoint.Name, err))
 		return nil, err
