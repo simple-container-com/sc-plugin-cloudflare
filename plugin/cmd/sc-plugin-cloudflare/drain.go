@@ -15,15 +15,21 @@ import (
 // drainContext replicates (ctx *sdk.Context).wait() — the unexported method
 // RunWithContext calls to drain pending async work before program exit.
 //
-// Mirrors sc-plugin-aws/plugin/cmd/sc-plugin-aws/drain.go — identical code,
-// identical reason. Without this, a bare sdk.NewContext + direct driver call
-// returns before Pulumi's background RegisterResource goroutines have talked
-// to the monitor, so the engine sees zero sub-resources and plans a destroy
-// of every entry in state. RunWithContext would wait on the right machinery,
+// Without this, a bare sdk.NewContext + direct fn() call returns before
+// Pulumi's background RegisterResource goroutines have talked to the
+// monitor, so the engine sees zero sub-resources and plans a destroy of
+// every entry in state. RunWithContext would wait on the right machinery,
 // but it also registers a root `pulumi:pulumi:Stack` whose URN is
 // `<project>-<stack>` — byte-identical to the one SC core already pushed
 // into the monitor proxy from its own pctx, so Pulumi rejects the second
 // register with "Duplicate resource URN".
+//
+// So we reach into pulumi/sdk/v3/go/pulumi/context.go's contextState via
+// reflect+unsafe (same pattern pkg/plugin/monitor_proxy.go uses to lift
+// the engine's monitor client) and run the wait sequence by hand:
+//
+//  1. state.join.Wait()        — non-RPC async work (ApplyT closures)
+//  2. state.rpcs → 0 under state.rpcsLock via state.rpcsDone.Wait()
 //
 // If a future Pulumi SDK renames contextState or any of these fields,
 // drainContext returns a diagnostic rather than nil-dereffing, so a
@@ -70,6 +76,9 @@ func drainContext(ctx *sdk.Context) error {
 	for *rpcsPtr > 0 {
 		cond := *rpcsDonePtr
 		if cond == nil {
+			// The field is only initialised the first time a goroutine
+			// decrements it to zero; if we beat that lazily, create a
+			// cond keyed on our lock so Wait yields the mutex properly.
 			cond = sync.NewCond(lockPtr)
 			*rpcsDonePtr = cond
 		}

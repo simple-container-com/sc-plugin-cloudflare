@@ -107,11 +107,18 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 		initZone += ", stack states no preference"
 	}
 	p.progress.Info("provision-registrar", "initialising cloudflare registrar; zone "+initZone)
-	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	defer done()
+	// DO NOT close pctx on return. Closing it cuts off any in-flight
+	// RegisterResource RPCs, which drops the plugin's URN registrations
+	// and plans a destroy of every pre-existing state entry — the exact
+	// cascade pattern Addendum U/V of
+	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
+	// documents. Mongodb hit this and lost the fleet's shared Atlas
+	// project on 2026-10-31T11:07. Every RPC handler in every plugin
+	// leaks the pctx until plugin shutdown.
 
 	cfg := inputsToRegistrarConfig(req.GetConfig())
 	desc := api.RegistrarDescriptor{
@@ -162,11 +169,18 @@ func (p *cfPlugin) ProvisionRegistrar(ctx context.Context, req *scpluginv1.Provi
 }
 
 func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecordRequest) (*scpluginv1.NewDnsRecordResponse, error) {
-	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	defer done()
+	// DO NOT close pctx on return. Closing it cuts off any in-flight
+	// RegisterResource RPCs, which drops the plugin's URN registrations
+	// and plans a destroy of every pre-existing state entry — the exact
+	// cascade pattern Addendum U/V of
+	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
+	// documents. Mongodb hit this and lost the fleet's shared Atlas
+	// project on 2026-10-31T11:07. Every RPC handler in every plugin
+	// leaks the pctx until plugin shutdown.
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
@@ -241,11 +255,18 @@ func waitForRef(ref any) string {
 }
 
 func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.NewOverrideHeaderRuleRequest) (*scpluginv1.NewOverrideHeaderRuleResponse, error) {
-	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	defer done()
+	// DO NOT close pctx on return. Closing it cuts off any in-flight
+	// RegisterResource RPCs, which drops the plugin's URN registrations
+	// and plans a destroy of every pre-existing state entry — the exact
+	// cascade pattern Addendum U/V of
+	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
+	// documents. Mongodb hit this and lost the fleet's shared Atlas
+	// project on 2026-10-31T11:07. Every RPC handler in every plugin
+	// leaks the pctx until plugin shutdown.
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
@@ -276,11 +297,18 @@ func (p *cfPlugin) NewOverrideHeaderRule(ctx context.Context, req *scpluginv1.Ne
 }
 
 func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scpluginv1.ProvisionDomainForEndpointRequest) (*scpluginv1.ProvisionDomainForEndpointResponse, error) {
-	pctx, done, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
+	pctx, _, err := p.pulumiContextFromHeader(ctx, req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
-	defer done()
+	// DO NOT close pctx on return. Closing it cuts off any in-flight
+	// RegisterResource RPCs, which drops the plugin's URN registrations
+	// and plans a destroy of every pre-existing state entry — the exact
+	// cascade pattern Addendum U/V of
+	// forge/docs/design/2026-10-24/sc-plugin-architecture/04-no-destroy-invariant.md
+	// documents. Mongodb hit this and lost the fleet's shared Atlas
+	// project on 2026-10-31T11:07. Every RPC handler in every plugin
+	// leaks the pctx until plugin shutdown.
 	p.mu.Lock()
 	r := p.registrar
 	p.mu.Unlock()
