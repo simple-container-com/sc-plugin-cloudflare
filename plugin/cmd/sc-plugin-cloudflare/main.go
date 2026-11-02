@@ -14,9 +14,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
@@ -344,6 +347,74 @@ func main() {
 			Output: os.Stderr,
 		}),
 	})
+}
+
+// ConvertStackConfig is the plugin-side half of SC core's A2 path
+// for plugin-owned template types. Dispatches on template_type
+// (today just cloudflare-static-website → PagesInput via
+// cfApi.ToPagesConfig), marshals the typed Input back as an
+// InputValue tree, and lifts the base_dns_zone field via the
+// api.DnsConfigAware interface PagesInput implements. PagesInput
+// does not implement Uses()/DependsOnResources(), so those response
+// fields stay empty — expected, Cloudflare Pages is a leaf template.
+func (p *cfPlugin) ConvertStackConfig(_ context.Context, req *scpluginv1.ConvertStackConfigRequest) (*scpluginv1.ConvertStackConfigResponse, error) {
+	templateType := req.GetTemplateType()
+	stackName := req.GetStackName()
+	stackDir := req.GetStackDir()
+	p.progress.Info("convert-stack-config", fmt.Sprintf("template=%q stack=%q", templateType, stackName))
+
+	tplCfg := &cfApi.TemplateConfig{}
+	if err := yamlRoundTripConvert(scPlugin.InputsToPlain(req.GetTemplateConfig()), tplCfg); err != nil {
+		return nil, errors.Wrapf(err, "decode template_config for %q", templateType)
+	}
+
+	stackPlain := scPlugin.InputsToPlain(req.GetStackConfig())
+	var typedInput any
+	var cerr error
+	switch templateType {
+	case cfApi.TemplateTypeCloudflareStaticWebsite:
+		stackCfg := &api.StackConfigStatic{}
+		if err := yamlRoundTripConvert(stackPlain, stackCfg); err != nil {
+			return nil, errors.Wrap(err, "decode StackConfigStatic")
+		}
+		typedInput, cerr = cfApi.ToPagesConfig(tplCfg, stackDir, stackName, stackCfg)
+	default:
+		return nil, errors.Errorf("sc-plugin-cloudflare does not own template type %q", templateType)
+	}
+	if cerr != nil {
+		return nil, errors.Wrapf(cerr, "convert %q for stack %q", templateType, stackName)
+	}
+
+	resp := &scpluginv1.ConvertStackConfigResponse{
+		Input: scPlugin.PlainToInputs(typedInput),
+	}
+	if dca, ok := typedInput.(api.DnsConfigAware); ok {
+		resp.BaseDnsZone = dca.OverriddenBaseZone()
+	}
+	if ra, ok := typedInput.(api.ResourceAware); ok {
+		resp.Uses = ra.Uses()
+	}
+	if wdr, ok := typedInput.(api.WithDependsOnResources); ok {
+		for _, dep := range wdr.DependsOnResources() {
+			raw, jerr := json.Marshal(dep)
+			if jerr != nil {
+				return nil, errors.Wrap(jerr, "marshal depends-on entry")
+			}
+			resp.DependsOnResourcesJson = append(resp.DependsOnResourcesJson, raw)
+		}
+	}
+	return resp, nil
+}
+
+// yamlRoundTripConvert decodes a plain map[string]any (what
+// InputsToPlain returns from the bus's InputValue tree) into a typed
+// struct via a YAML round-trip. Same shape pApi.ConvertConfig uses.
+func yamlRoundTripConvert(src any, out any) error {
+	b, err := yaml.Marshal(src)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(b, out)
 }
 
 // LogStream drains the plugin's progress Publisher onto the gRPC
