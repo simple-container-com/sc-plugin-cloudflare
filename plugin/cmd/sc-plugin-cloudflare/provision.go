@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -84,7 +83,7 @@ func (p *cfPlugin) Provision(ctx context.Context, req *scpluginv1.ProvisionReque
 
 	params := pApi.ProvisionParams{
 		Log:              newProgressLogger(p.progress, req.GetResourceType()),
-		ComputeContext:   newCapturingCollector(),
+		ComputeContext:   &runtime.Collector{},
 		BaseEnvVariables: map[string]string{},
 	}
 
@@ -212,40 +211,3 @@ func unwrapInputValue(v *scpluginv1.InputValue) any {
 	}
 	return nil
 }
-
-// capturingCollector is a minimal pApi.ComputeContextCollector that
-// records nothing — cloudflare-static-website is a terminal template that
-// does not propagate env vars or tpl extensions to a parent compute. If a
-// future cloudflare resource needs collector semantics, port the full
-// shape from sc-plugin-aws/plugin/cmd/sc-plugin-aws/collector.go.
-type capturingCollector struct {
-	mu sync.Mutex
-}
-
-func newCapturingCollector() *capturingCollector { return &capturingCollector{} }
-
-func (c *capturingCollector) SecretEnvVariables() []pApi.ComputeEnvVariable { return nil }
-func (c *capturingCollector) EnvVariables() []pApi.ComputeEnvVariable       { return nil }
-func (c *capturingCollector) AddEnvVariableIfNotExist(_, _, _, _, _ string) {}
-func (c *capturingCollector) AddSecretEnvVariableIfNotExist(_, _, _, _, _ string) {
-}
-
-func (c *capturingCollector) AddResourceTplExtension(_ string, _ map[string]string)      {}
-func (c *capturingCollector) AddDependencyTplExtension(_, _ string, _ map[string]string) {}
-func (c *capturingCollector) AddDependency(sdk.Resource)                                 {}
-func (c *capturingCollector) Dependencies() []sdk.Resource                               { return nil }
-func (c *capturingCollector) AddOutput(_ *sdk.Context, _ sdk.Output)                     {}
-func (c *capturingCollector) Outputs() []sdk.Output                                      { return nil }
-
-func (c *capturingCollector) ResolvePlaceholders(any) error                    { return nil }
-func (c *capturingCollector) AddPreProcessor(any, pApi.PreProcessor)           {}
-func (c *capturingCollector) AddPostProcessor(any, pApi.PostProcessor)         {}
-func (c *capturingCollector) GetPreProcessors(any) ([]pApi.PreProcessor, bool) { return nil, false }
-
-func (c *capturingCollector) GetPostProcessors(any) ([]pApi.PostProcessor, bool) { return nil, false }
-
-func (c *capturingCollector) RunPreProcessors(any, any) error { return nil }
-
-func (c *capturingCollector) RunPostProcessors(any, any) error { return nil }
-
-func (c *capturingCollector) ResourceOutputs() pApi.ResourcesOutputs { return nil }
