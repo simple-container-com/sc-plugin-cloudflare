@@ -162,12 +162,23 @@ func (p *cfPlugin) NewDnsRecord(ctx context.Context, req *scpluginv1.NewDnsRecor
 		return nil, errors.New("NewDnsRecord called before ProvisionRegistrar")
 	}
 	p.progress.Info("dns-record", fmt.Sprintf("creating %s record %q → %q", req.GetRecordType(), req.GetRecordName(), req.GetValueResolved()))
-	out, err := r.NewRecord(rctx.Pulumi, api.DnsRecord{
+	rec := api.DnsRecord{
 		Name:    req.GetRecordName(),
 		Type:    req.GetRecordType(),
 		Value:   req.GetValueResolved(),
 		Proxied: req.GetProxied(),
-	})
+	}
+	// Priority is only sent for MX / SRV / URI record types — see
+	// pkg/api/dns.go and NewDnsRecordRequest in the proto for the
+	// contract. Preserve the "unset" distinction (nil pointer) so the
+	// cf driver below can omit the field from pulumi.Record rather than
+	// passing priority 0, which cloudflare treats as a value rather
+	// than "not applicable".
+	if req.Priority != nil {
+		p := int(req.GetPriority())
+		rec.Priority = &p
+	}
+	out, err := r.NewRecord(rctx.Pulumi, rec)
 	if err != nil {
 		p.progress.Error("dns-record", fmt.Sprintf("record %q failed: %v", req.GetRecordName(), err))
 		return nil, err

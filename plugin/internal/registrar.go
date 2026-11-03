@@ -99,14 +99,21 @@ func (r *provisioner) ProvisionRecords(ctx *sdk.Context, params pApi.ProvisionPa
 		if record.Value != "" {
 			recordValue = sdk.String(record.Value).ToStringOutput()
 		}
-		created, err := cfImpl.NewRecord(ctx, recordName, &cfImpl.RecordArgs{
+		args := &cfImpl.RecordArgs{
 			ZoneId:  sdk.String(r.zone.ZoneId),
 			Name:    sdk.String(record.Name),
 			Type:    sdk.String(record.Type),
 			Content: recordValue,
 			Proxied: sdk.Bool(record.Proxied),
 			Ttl:     sdk.Float64(1),
-		}, sdk.Provider(r.provider))
+		}
+		// Priority — only used by MX / SRV / URI records. pulumi-cloudflare's
+		// Record resource treats an omitted Priority differently from
+		// `Priority: 0`, so preserve the operator's `nil` as "not set".
+		if record.Priority != nil {
+			args.Priority = sdk.Float64Ptr(float64(*record.Priority))
+		}
+		created, err := cfImpl.NewRecord(ctx, recordName, args, sdk.Provider(r.provider))
 		if err != nil {
 			// This used to log and fall through to `res.ID()` on a nil *Record,
 			// which panics — so the one path that noticed a failed record was
@@ -136,14 +143,20 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 	if dnsRecord.Value != "" {
 		recordValue = sdk.String(dnsRecord.Value).ToStringOutput()
 	}
-	ref, err := cfImpl.NewRecord(ctx, fmt.Sprintf("%s-record", dnsRecord.Name), &cfImpl.RecordArgs{
+	args := &cfImpl.RecordArgs{
 		ZoneId:  sdk.String(r.zone.ZoneId),
 		Name:    sdk.String(dnsRecord.Name),
 		Type:    sdk.String(dnsRecord.Type),
 		Content: recordValue,
 		Proxied: sdk.Bool(dnsRecord.Proxied),
 		Ttl:     sdk.Float64(1),
-	}, sdk.Provider(r.provider))
+	}
+	// Priority — see the bulk ProvisionRecords comment above for the
+	// same contract.
+	if dnsRecord.Priority != nil {
+		args.Priority = sdk.Float64Ptr(float64(*dnsRecord.Priority))
+	}
+	ref, err := cfImpl.NewRecord(ctx, fmt.Sprintf("%s-record", dnsRecord.Name), args, sdk.Provider(r.provider))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create record %q", dnsRecord.Name)
 	}

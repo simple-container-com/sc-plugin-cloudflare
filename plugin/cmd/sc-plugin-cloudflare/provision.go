@@ -5,10 +5,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/pkg/errors"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -166,18 +165,32 @@ func decodeTypedConfig(resourceType string, inputs map[string]*scpluginv1.InputV
 }
 
 // decodeInputsAs lifts the plugin bus's input map into a typed struct via
-// yaml round-trip. Mirrors sc-plugin-aws's decoder. Scalar-only decoding
-// would drop nested maps and lists; see the aws file's live-caught note.
+// json round-trip. Previously used yaml round-trip, which silently drops
+// every field whose yaml tag does not match the on-wire key. That bit
+// PagesInput specifically: SC core's `serializeConfigToInputs` uses
+// `json.Marshal`, so PagesInput.Domain (json:"pagesDomain" / yaml:"_pages_domain")
+// arrives on the bus under the key "pagesDomain" — and yaml.Unmarshal
+// then can't find a matching yaml tag and leaves the field empty. Same
+// for pagesBaseDnsZone, pagesIndexDocument, pagesErrorDocument. Live-
+// caught 2026-11-03 on navizon-landing: Pages project created without
+// a `domain:` binding; `EffectiveDomain()` read empty on both the flat
+// mirror and the (separately-broken) inline Site subtree, so the
+// NewPagesDomain + Registrar CNAME path never fired.
+//
+// JSON round-trip here matches the on-wire JSON shape exactly, so the
+// plugin and SC core use the same tags for the same fields. Scalar-only
+// decoding would drop nested maps and lists; see the aws file for the
+// equivalent pattern (which uses json round-trip too).
 func decodeInputsAs[T any](inputs map[string]*scpluginv1.InputValue, out *T) error {
 	plain := make(map[string]any, len(inputs))
 	for k, v := range inputs {
 		plain[k] = unwrapInputValue(v)
 	}
-	b, err := yaml.Marshal(plain)
+	b, err := json.Marshal(plain)
 	if err != nil {
 		return err
 	}
-	return yaml.Unmarshal(b, out)
+	return json.Unmarshal(b, out)
 }
 
 // unwrapInputValue recursively flattens an InputValue tree back into Go
