@@ -19,8 +19,6 @@ import (
 	"os"
 	"sync"
 
-	"gopkg.in/yaml.v3"
-
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
 	sdk "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -419,13 +417,37 @@ func (p *cfPlugin) ConvertStackConfig(_ context.Context, req *scpluginv1.Convert
 
 // yamlRoundTripConvert decodes a plain map[string]any (what
 // InputsToPlain returns from the bus's InputValue tree) into a typed
-// struct via a YAML round-trip. Same shape pApi.ConvertConfig uses.
+// struct via a JSON round-trip.
+//
+// Started life as a yaml roundtrip to match pApi.ConvertConfig, but
+// yaml.v3 handles `,inline` on a NAMED struct field by PROMOTING the
+// field's children to the outer level on both marshal AND unmarshal.
+// SC core's bus serialiser (pkg/plugin.PlainToInputs) is json.Marshal-
+// based, so an operator-declared `*StackConfigStatic{Site StaticSiteConfig
+// \`json:",inline" yaml:",inline"\`}` arrives on the plugin bus as a
+// nested `Site:{…}` subtree (standard encoding/json ignores `,inline`).
+// A yaml decode back into StackConfigStatic then silently DROPS the
+// Site: key because yaml.v3 expects its children inline, not nested
+// — so StackConfigStatic.Site.Domain was zero post-decode and
+// PagesInput.Domain shipped empty.
+//
+// Live-caught 2026-11-04 on navizon's cloudflare-static-website
+// isolated deploy — the Pages driver reported
+// `cloudflare pages project … has no \`domain:\` set; site will serve
+// at …pages.dev` for both navizonfuels.com and navizon.energy.
+// Diagnosed by navizon session; same shape as the PagesInput.Domain
+// drop previously fixed in provision.go.
+//
+// JSON on both ends keeps Site as a named field in both directions,
+// matching the bus format. Keeps the existing `_pages_domain` /
+// fallback plumbing in provision.go intact — this fix is at the
+// conversion seam, not the provision seam.
 func yamlRoundTripConvert(src any, out any) error {
-	b, err := yaml.Marshal(src)
+	b, err := json.Marshal(src)
 	if err != nil {
 		return err
 	}
-	return yaml.Unmarshal(b, out)
+	return json.Unmarshal(b, out)
 }
 
 // LogStream drains the plugin's progress Publisher onto the gRPC
