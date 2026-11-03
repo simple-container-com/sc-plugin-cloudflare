@@ -156,7 +156,24 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 	if dnsRecord.Priority != nil {
 		args.Priority = sdk.Float64Ptr(float64(*dnsRecord.Priority))
 	}
-	ref, err := cfImpl.NewRecord(ctx, fmt.Sprintf("%s-record", dnsRecord.Name), args, sdk.Provider(r.provider))
+	// URN name MUST be unique across a Pulumi state. ProvisionRecords
+	// above has a shared-name dedup (md5-suffix) that we cannot reach
+	// from the per-record NewRecord path the sidecar calls — each RPC
+	// walks this function in isolation, with no cross-record context.
+	// So compute a stable per-record suffix unconditionally: type + the
+	// first 4 bytes of md5(value). Different type on the same name (MX
+	// 10/20 at `@`, or a CNAME + TXT at `_acme-challenge`) → distinct
+	// URNs. Same type on the same name with different values (MX ×2 at
+	// `@`) → distinct URNs via the value hash. A single apex record
+	// keeps a stable URN across redeploys because inputs are stable.
+	//
+	// Live-caught 2026-11-03 on navizon-infra preview run 41728410380:
+	// four apex records (`@` TXT verification, two MX, SPF) collided
+	// at `urn:...::cloudflare:index/record:Record::@-record`. Proton
+	// Mail MX pair is the primary consumer of this fix.
+	sum := md5.Sum([]byte(dnsRecord.Type + "|" + dnsRecord.Value))
+	urnName := fmt.Sprintf("%s-%s-%s-record", dnsRecord.Name, dnsRecord.Type, hex.EncodeToString(sum[:4]))
+	ref, err := cfImpl.NewRecord(ctx, urnName, args, sdk.Provider(r.provider))
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create record %q", dnsRecord.Name)
 	}
