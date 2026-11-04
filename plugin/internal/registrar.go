@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -171,9 +172,8 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 	// four apex records (`@` TXT verification, two MX, SPF) collided
 	// at `urn:...::cloudflare:index/record:Record::@-record`. Proton
 	// Mail MX pair is the primary consumer of this fix.
-	sum := md5.Sum([]byte(dnsRecord.Type + "|" + dnsRecord.Value))
-	urnName := fmt.Sprintf("%s-%s-%s-record", dnsRecord.Name, dnsRecord.Type, hex.EncodeToString(sum[:4]))
-	ref, err := cfImpl.NewRecord(ctx, urnName, args, sdk.Provider(r.provider))
+	urnName, opts := recordURNName(dnsRecord)
+	ref, err := cfImpl.NewRecord(ctx, urnName, args, append(opts, sdk.Provider(r.provider))...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create record %q", dnsRecord.Name)
 	}
@@ -463,4 +463,26 @@ async function handleRequest(origRequest) {
 	return &api.ResourceOutput{
 		Ref: workerRoute.ID(),
 	}, nil
+}
+
+// recordURNName names the Pulumi resource for one DNS record.
+//
+// 2026-11-04 — #13 renamed every record from "<name>-record" to
+// "<name>-<type>-<md5(type|value)[:4]>-record" without an alias. Existing
+// stacks then planned a create for a record Cloudflare already held and
+// failed with 81053 ("An A, AAAA, or CNAME record with that host already
+// exists"); app-ai-innmind staging broke on its ACM validation CNAME. A
+// CNAME is the only record at its host, so it needs no value hash: it keeps
+// one name per host, a changed target (a reissued certificate's validation
+// value) is an in-place update instead of a second record, and the alias
+// carries stacks deployed before #13 over without a replace. Other types may
+// repeat at one name (MX, TXT, A round-robin), so they keep the value hash
+// from #13; before #13 they could not coexist at one name in this path.
+func recordURNName(dnsRecord api.DnsRecord) (string, []sdk.ResourceOption) {
+	if strings.EqualFold(dnsRecord.Type, "CNAME") {
+		legacy := fmt.Sprintf("%s-record", dnsRecord.Name)
+		return fmt.Sprintf("%s-CNAME-record", dnsRecord.Name), []sdk.ResourceOption{sdk.Aliases([]sdk.Alias{{Name: sdk.String(legacy)}})}
+	}
+	sum := md5.Sum([]byte(dnsRecord.Type + "|" + dnsRecord.Value))
+	return fmt.Sprintf("%s-%s-%s-record", dnsRecord.Name, dnsRecord.Type, hex.EncodeToString(sum[:4])), nil
 }
