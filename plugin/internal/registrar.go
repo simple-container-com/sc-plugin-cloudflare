@@ -484,5 +484,18 @@ func recordURNName(dnsRecord api.DnsRecord) (string, []sdk.ResourceOption) {
 		return fmt.Sprintf("%s-CNAME-record", dnsRecord.Name), []sdk.ResourceOption{sdk.Aliases([]sdk.Alias{{Name: sdk.String(legacy)}})}
 	}
 	sum := md5.Sum([]byte(dnsRecord.Type + "|" + dnsRecord.Value))
-	return fmt.Sprintf("%s-%s-%s-record", dnsRecord.Name, dnsRecord.Type, hex.EncodeToString(sum[:4])), nil
+	urn := fmt.Sprintf("%s-%s-%s-record", dnsRecord.Name, dnsRecord.Type, hex.EncodeToString(sum[:4]))
+	// An A or AAAA record at a host that a stack deployed before #13 owns is
+	// that stack's one record there: before #13 two records could not share a
+	// name in this path. #13 renamed it too, with no alias, so a stack's first
+	// deploy after it plans to delete the live record and create an identical
+	// one under the new name, and the create fails ("an identical record
+	// already exists") or, in a different order, drops the record. Carry it
+	// over like the CNAME. MX and TXT repeat at a name, so they stay unaliased:
+	// two resources aliasing one old URN is an engine error.
+	if strings.EqualFold(dnsRecord.Type, "A") || strings.EqualFold(dnsRecord.Type, "AAAA") {
+		legacy := fmt.Sprintf("%s-record", dnsRecord.Name)
+		return urn, []sdk.ResourceOption{sdk.Aliases([]sdk.Alias{{Name: sdk.String(legacy)}})}
+	}
+	return urn, nil
 }
