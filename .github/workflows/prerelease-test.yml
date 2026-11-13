@@ -1,0 +1,43 @@
+name: Prerelease test build (TEMPORARY, remove before merge)
+
+# Builds linux/amd64 from this branch and publishes it as a prerelease, which
+# is never "latest". Same build flags as release.yml. Exists only because the
+# pulumi-cloudflare SDK does not compile on a developer machine under 6 GiB.
+
+on:
+  push:
+    branches: ['fix/a-record-legacy-alias']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: plugin/go.sum
+      - name: Build
+        working-directory: plugin
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+          GOMAXPROCS: '1'
+          GOMEMLIMIT: '6GiB'
+        run: |
+          go test -count=1 -run 'RecordURNName' ./internal/
+          go build -trimpath -buildvcs=false -p 1 -ldflags "-s -w -X main.version=test-${GITHUB_SHA::7}" -o ../sc-plugin-cloudflare-linux-amd64 ./cmd/sc-plugin-cloudflare
+          cd .. && sha256sum sc-plugin-cloudflare-linux-amd64 | sed 's#  #  ../#' > sha256sums.txt
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="pr-cf-${GITHUB_SHA::7}"
+          gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+            --title "$tag (test build, do not use)" \
+            --notes "Test build of a branch. linux/amd64 only. Not a release; do not pin it." \
+            sc-plugin-cloudflare-linux-amd64 sha256sums.txt
