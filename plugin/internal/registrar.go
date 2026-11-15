@@ -34,6 +34,8 @@ type provisioner struct {
 	listRoutes routeLister
 	routesOnce sync.Once
 	routes     map[string]liveRoute
+
+	legacy legacyClaims
 }
 
 func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.ProvisionParams) (pApi.Registrar, error) {
@@ -173,6 +175,9 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 	// at `urn:...::cloudflare:index/record:Record::@-record`. Proton
 	// Mail MX pair is the primary consumer of this fix.
 	urnName, opts := recordURNName(dnsRecord)
+	if len(opts) > 0 && !strings.EqualFold(dnsRecord.Type, "CNAME") && !r.legacy.claim(dnsRecord.Name) {
+		opts = nil
+	}
 	ref, err := cfImpl.NewRecord(ctx, urnName, args, append(opts, sdk.Provider(r.provider))...)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create record %q", dnsRecord.Name)
