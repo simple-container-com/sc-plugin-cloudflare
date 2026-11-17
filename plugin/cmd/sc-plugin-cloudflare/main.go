@@ -87,6 +87,39 @@ func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpl
 			// advertisement per api #633. See
 			// forge/docs/roadmap/items/sc-plugin-registerable-config-regenerated-types.md.
 			"cloudflare:index/workersRoute:WorkersRoute",
+			// cloudflare:index/record:Record — the Cloudflare DNS record
+			// carries three ForceNew inputs (name, type, zone_id), all
+			// three sourced from operator config or from SC core's
+			// own routing logic:
+			//   - name (e.g. backup.simple-forge.com) — operator config
+			//   - type (CNAME / A / TXT) — operator config
+			//   - zone_id — resolved by the registrar from the init zone
+			//                OR a per-call DomainEndpoint.BaseZone
+			// A Component whose ingress.hostname landed on a Record in
+			// the wrong zone (pre-#19/#20 bug — live-caught 2026-11-17
+			// on forge provision 44184574459) legitimately needs the
+			// Record to move zones on the next deploy: zone_id flips,
+			// Pulumi plans a replace, the destructive-replace guard
+			// refuses without this advertisement.
+			//
+			// What the exemption accepts, knowingly: between the delete
+			// and the create of the Record resource, a DNS lookup for
+			// the name may miss. Recursive resolvers cache aggressively
+			// (CNAME TTLs on Cloudflare default to 1s proxied, 300s
+			// unproxied), so the practical window is short. Non-apex
+			// records on a live fleet domain trade seconds of NXDOMAIN
+			// for reconfiguration. Apex A/AAAA records would be a
+			// bigger blast — operators who move those deliberately take
+			// the SC_ALLOW_DESTRUCTIVE_REPLACE=1 route today.
+			//
+			// NOT exempted: non-ForceNew changes (content/value, TTL,
+			// proxied flag) still go through in-place updates. Only
+			// ForceNew changes (which ARE config-regenerable per the
+			// three inputs above) hit this exemption.
+			//
+			// See forge/docs/design/2026-11-17/component-parent-dns-wiring/
+			// §Cleanup for the live case.
+			"cloudflare:index/record:Record",
 		},
 	}, nil
 }
