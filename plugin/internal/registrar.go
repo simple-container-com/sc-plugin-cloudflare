@@ -36,6 +36,17 @@ type provisioner struct {
 	routes     map[string]liveRoute
 
 	legacy legacyClaims
+
+	// zonesByName caches cfImpl.LookupZone results by zone name. Empty
+	// entry (and r.zone itself) carry the registrar's init-time zone.
+	// Populated lazily by zoneFor() when a per-call BaseZone override
+	// differs from the init-bound zone (Component ingress path). One
+	// Cloudflare account can hold many zones — this lets a single
+	// registrar instance serve them all without re-initializing the
+	// Provider (duplicate-URN panic; live-caught 2026-11-17 on forge
+	// provision 44157694221).
+	zonesMu     sync.Mutex
+	zonesByName map[string]*cfImpl.LookupZoneResult
 }
 
 func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.ProvisionParams) (pApi.Registrar, error) {
@@ -73,13 +84,51 @@ func Registrar(ctx *sdk.Context, config api.RegistrarDescriptor, params pApi.Pro
 	}
 
 	return &provisioner{
-		provider:   provider,
-		config:     cfg,
-		zone:       cfZone,
-		accountId:  cfg.AccountId,
-		log:        params.Log,
-		listRoutes: providerRouteLister(provider),
+		provider:    provider,
+		config:      cfg,
+		zone:        cfZone,
+		accountId:   cfg.AccountId,
+		log:         params.Log,
+		listRoutes:  providerRouteLister(provider),
+		zonesByName: map[string]*cfImpl.LookupZoneResult{baseZoneName: cfZone},
 	}, nil
+}
+
+// zoneFor returns the Cloudflare zone this call should act on. Empty
+// baseZone (legacy callers, client-stack `domain:` path, parent-stack
+// records whose Component carries no BaseZone override) returns the
+// init-bound zone directly. Non-empty baseZone matching the init-bound
+// zone returns the same object (no lookup). A non-empty baseZone that
+// names a DIFFERENT zone triggers a cfImpl.LookupZone inside the SAME
+// provider — cached under its name so a parent stack that provisions
+// multiple Components in the same zone shares one lookup.
+//
+// Used by ProvisionDomainForEndpoint. Other methods (NewRecord,
+// NewOverrideHeaderRule, etc.) stay bound to r.zone because callers
+// outside the Component-dispatch path don't carry a BaseZone today.
+func (r *provisioner) zoneFor(ctx *sdk.Context, baseZone string) (*cfImpl.LookupZoneResult, error) {
+	if baseZone == "" || baseZone == r.zone.Name {
+		return r.zone, nil
+	}
+	r.zonesMu.Lock()
+	defer r.zonesMu.Unlock()
+	if cached, ok := r.zonesByName[baseZone]; ok {
+		return cached, nil
+	}
+	zone, err := cfImpl.LookupZone(ctx, &cfImpl.LookupZoneArgs{
+		Filter: &cfImpl.GetZoneFilter{
+			Name:  lo.ToPtr(baseZone),
+			Match: "all",
+			Account: &cfImpl.GetZoneFilterAccount{
+				Id: lo.ToPtr(r.accountId),
+			},
+		},
+	}, sdk.Provider(r.provider))
+	if err != nil {
+		return nil, errors.Wrapf(err, "per-call zone lookup for %q", baseZone)
+	}
+	r.zonesByName[baseZone] = zone
+	return zone, nil
 }
 
 func (r *provisioner) ProvisionRecords(ctx *sdk.Context, params pApi.ProvisionParams) (*api.ResourceOutput, error) {
@@ -195,25 +244,56 @@ func (r *provisioner) NewRecord(ctx *sdk.Context, dnsRecord api.DnsRecord) (*api
 // record — which is what gives it a certificate — and deploys a worker to rewrite the
 // Host header so the endpoint recognises the request. No edge resource of our own is
 // involved, so the record can be created before the rule.
+//
+// Per-call zone override: when endpoint.BaseZone names a zone other than the
+// registrar's init-bound zone (Component ingress path from the parent stack, where
+// DnsPreference wasn't threaded at init), zoneFor() looks it up on the same
+// provider. All downstream method calls happen on a shallow-copy *provisioner
+// whose `zone` field is the per-call zone — so NewRecord's `r.zone.ZoneId`,
+// NewOverrideHeaderRule's WorkersRoute `ZoneId`, etc. all land on the correct
+// zone without re-initializing the Cloudflare Provider (which would otherwise
+// trip a Duplicate URN panic at `pulumi:providers:cloudflare::<accountId>`).
+//
+// Live-caught 2026-11-17 on forge provision 44157694221. See
+// forge/docs/design/2026-11-17/component-parent-dns-wiring/ for the full
+// architecture rationale + the rejected alternatives.
 func (r *provisioner) ProvisionDomainForEndpoint(ctx *sdk.Context, stack api.Stack, endpoint pApi.DomainEndpoint) (*api.ResourceOutput, error) {
-	r.log.Info(ctx.Context(), "configure CNAME DNS record %q for stack %q...", endpoint.Domain, stack.Name)
+	effective := r
+	if endpoint.BaseZone != "" && endpoint.BaseZone != r.zone.Name {
+		zone, err := r.zoneFor(ctx, endpoint.BaseZone)
+		if err != nil {
+			return nil, errors.Wrapf(err, "resolving BaseZone %q for endpoint %q", endpoint.BaseZone, endpoint.Domain)
+		}
+		// Shallow-copy with the per-call zone + a fresh routes cache
+		// (routes are zone-scoped; the init-zone's cache does not apply
+		// to the override zone). Provider + accountId stay shared —
+		// that's the whole point of per-call routing.
+		shadow := *r
+		shadow.zone = zone
+		shadow.routes = nil
+		shadow.routesOnce = sync.Once{}
+		shadow.listRoutes = providerRouteLister(r.provider)
+		effective = &shadow
+	}
 
-	record, err := r.NewRecord(ctx, api.DnsRecord{
+	effective.log.Info(ctx.Context(), "configure CNAME DNS record %q for stack %q on zone %q...", endpoint.Domain, stack.Name, effective.zone.Name)
+
+	record, err := effective.NewRecord(ctx, api.DnsRecord{
 		Name:     endpoint.Domain,
 		Type:     "CNAME",
 		ValueOut: endpoint.TargetHost.ToStringOutput(),
 		Proxied:  true,
 	})
 	if err != nil {
-		r.log.Error(ctx.Context(), "failed to create DNS record %q: %s", endpoint.Domain, err.Error())
+		effective.log.Error(ctx.Context(), "failed to create DNS record %q: %s", endpoint.Domain, err.Error())
 		return nil, errors.Wrapf(err, "failed to create DNS record %q", endpoint.Domain)
 	}
-	if _, err := r.NewOverrideHeaderRule(ctx, stack, pApi.OverrideHeaderRule{
+	if _, err := effective.NewOverrideHeaderRule(ctx, stack, pApi.OverrideHeaderRule{
 		Name:     endpoint.Name,
 		FromHost: endpoint.Domain,
 		ToHost:   endpoint.TargetHost,
 	}); err != nil {
-		r.log.Error(ctx.Context(), "failed to create override header rule for %q", endpoint.Domain)
+		effective.log.Error(ctx.Context(), "failed to create override header rule for %q", endpoint.Domain)
 		return nil, errors.Wrapf(err, "failed to create override host rule from %q", endpoint.Domain)
 	}
 	return record, nil
