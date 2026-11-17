@@ -63,6 +63,31 @@ func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpl
 			// forge/docs/design/2026-10-31/cloudflare-pages-direct-upload/
 			// and workflow #41181349116's wrangler-not-in-image constraint.
 		},
+		ConfigRegeneratedTypes: []string{
+			// WorkersRoute carries pattern + zoneId + script — all three
+			// come from operator config (see registrar.go:239). When the
+			// referenced Worker script is replaced (e.g. Dockerfile
+			// content change, or the script output is Unknown at preview
+			// time), the route cascades a replace that pulumi-cloudflare
+			// reports WITHOUT naming a replace-forcing key (the preview
+			// says "check the resource's triggers").
+			//
+			// SC's own `sdk.RetainOnDelete(true)` on the route (set to
+			// protect against the v6-provider ID-format regression; see
+			// adopt.go) means the live Cloudflare route is never
+			// physically deleted — only its Pulumi state entry. The
+			// subsequent create re-adopts the same live route by
+			// pattern. The delete-then-create is purely a state rewrite
+			// with a seconds-long window where Pulumi has no state for
+			// the route; the live route itself is undisturbed.
+			//
+			// Live-caught 2026-11-17 on backup-smoke-tier4 run
+			// 44061508037. Rule-2 entry first shipped as an in-tree
+			// allowlist in api #632; the plugin now owns the
+			// advertisement per api #633. See
+			// forge/docs/roadmap/items/sc-plugin-registerable-config-regenerated-types.md.
+			"cloudflare:index/workersRoute:WorkersRoute",
+		},
 	}, nil
 }
 
