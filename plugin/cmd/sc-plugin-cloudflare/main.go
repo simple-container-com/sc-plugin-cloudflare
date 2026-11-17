@@ -314,6 +314,15 @@ func (p *cfPlugin) ProvisionDomainForEndpoint(ctx context.Context, req *scplugin
 		Domain:     req.GetDomain(),
 		TargetHost: sdk.String(req.GetTargetHostResolved()),
 		WebSocket:  req.GetWebsocket(),
+		// Per-call zone override — passed by SC core's
+		// pluginRegistrar.ProvisionDomainForEndpoint when the caller
+		// (wireComponentDomain, in practice) set endpoint.BaseZone.
+		// Empty string on pre-field api binaries = fall back to the
+		// registrar's init-time zone (fleet client-stack behavior).
+		// Needed the api v>=2026.11.82 proto's base_zone = 8 to cross
+		// the wire; live-caught 2026-11-17 when the field was dropped
+		// and backup.simple-forge.com hit a wrong-zone 400.
+		BaseZone: req.GetBaseZone(),
 	}
 	p.progress.Info("endpoint", fmt.Sprintf("provisioning domain %q for endpoint %q (target %q)", endpoint.Domain, endpoint.Name, req.GetTargetHostResolved()))
 	out, err := r.ProvisionDomainForEndpoint(rctx.Pulumi, api.Stack{Name: req.GetStackName()}, endpoint)
