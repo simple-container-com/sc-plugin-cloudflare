@@ -32,6 +32,17 @@ import (
 	cfInternal "github.com/simple-container-com/sc-plugin-cloudflare/plugin/internal"
 )
 
+// version is stamped by the release workflow via
+// `go build -ldflags "-X main.version=${VERSION}"` (release.yml:81).
+// The default `"dev"` is what a local `make build` or a test run sees.
+//
+// Without this variable the ldflag landed on nothing (Go linker silently
+// ignores `-X` against a missing symbol) and the pre-engine load line
+// always read `vcloudflare-0.0.1`. Shared fleet lesson, see
+// sc-component-backup#38 for the full write-up; roadmap item
+// `items/sc-plugin-version-stamp-missing-fleetwide.md`.
+var version = "dev"
+
 type cfPlugin struct {
 	scpluginv1.UnimplementedSCCloudPluginServer
 
@@ -51,7 +62,7 @@ type cfPlugin struct {
 
 func (p *cfPlugin) Schema(_ context.Context, _ *scpluginv1.SchemaRequest) (*scpluginv1.SchemaResponse, error) {
 	return &scpluginv1.SchemaResponse{
-		PluginVersion:  "cloudflare-0.0.1",
+		PluginVersion:  "cloudflare-" + version,
 		RegistrarTypes: []string{"cloudflare"},
 		ResourceTypes:  []string{cfApi.TemplateTypeCloudflareStaticWebsite},
 		PulumiPlugins: []*scpluginv1.PulumiPluginRequirement{
