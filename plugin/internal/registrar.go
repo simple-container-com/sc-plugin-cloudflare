@@ -423,7 +423,21 @@ func (r *provisioner) NewOverrideHeaderRule(ctx *sdk.Context, stack api.Stack, r
 %s 
 
 addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
+  // Defence in depth: an unhandled throw anywhere in handleRequest is rendered
+  // by Cloudflare as error 1101 "Worker threw exception" — an opaque branded
+  // error page, with the thrown message visible only in Workers analytics and
+  // the origin never contacted. Catch it, log it (so wrangler tail and the
+  // dashboard name the real fault) and answer 502 with the message instead, so
+  // an edge-side defect reads as a gateway failure rather than a site outage.
+  event.respondWith(
+    handleRequest(event.request).catch(err => {
+      console.error("host-override worker failed:", (err && err.stack) || String(err));
+      return new Response("host override worker error: " + ((err && err.message) || String(err)), {
+        status: 502,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    })
+  );
 });
 
 async function handleRequest(origRequest) {
@@ -440,10 +454,22 @@ async function handleRequest(origRequest) {
 	const fwdHeaders = new Headers(origRequest.headers);
 	fwdHeaders.set("X-Forwarded-Host", origHost);
 
+	// A GET/HEAD Request MUST NOT carry a body: the Fetch spec makes that
+	// combination a TypeError, and because the throw was unhandled it surfaced
+	// to visitors as Cloudflare error 1101 "Worker threw exception" (the fetch
+	// listener now catches it too, but this is the actual fault).
+	// origRequest.body is non-null for a GET the moment a client sends one —
+	// rare from a browser, routine from proxies, crawlers, API clients and
+	// curl -X GET --data. Confirmed 2026-11-26: 54 1101s in 25 minutes on
+	// talk.simple-forge.com, every one with subrequests=0 in
+	// workersInvocationsAdaptive, i.e. the script died HERE, before its fetch()
+	// to the origin. Dropping the body is what every conforming intermediary
+	// does with it.
+	const methodAllowsBody = origRequest.method !== "GET" && origRequest.method !== "HEAD";
 	const request = new Request(url, {
 		headers: fwdHeaders,
 		method: origRequest.method,
-		body: origRequest.body,
+		body: methodAllowsBody ? origRequest.body : null,
 	});
 
 	%s
@@ -498,14 +524,23 @@ async function handleRequest(origRequest) {
 		headers: origResponse.headers
 	});
 
+	// Headers.get() returns null — never the empty string — for a header that
+	// is absent, so the original empty-string comparisons were always true and
+	// these branches ran unconditionally. That set a literal
+	// "content-length: null" and "www-authenticate: null" on every response
+	// (observed live on talk.simple-forge.com and app.simple-forge.com,
+	// 2026-11-26). Test for the value being present instead.
+
 	// to pass original content-length if x-content-length is specified
-	if (response.headers.get("content-length") == "0" && response.headers.get("x-content-length") != '') {
-		response.headers.set("content-length", response.headers.get("x-content-length"))
+	const xContentLength = response.headers.get("x-content-length");
+	if (response.headers.get("content-length") == "0" && xContentLength) {
+		response.headers.set("content-length", xContentLength)
 	}
 	// to pass original www-authenticate remapped by AWS
-	if (response.headers.get("x-amzn-remapped-www-authenticate") != '') {
-		response.headers.append("www-authenticate", response.headers.get("x-amzn-remapped-www-authenticate"));
-	}	
+	const remappedAuth = response.headers.get("x-amzn-remapped-www-authenticate");
+	if (remappedAuth) {
+		response.headers.append("www-authenticate", remappedAuth);
+	}
 	return response
 };
 
